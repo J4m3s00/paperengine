@@ -1,5 +1,6 @@
 #include "core/renderer/renderer.h"
 
+#include "core/renderer/shader.h"
 #include "core/swapchain.h"
 #include "core/vulkan_context.h"
 #include "core/window.h"
@@ -8,8 +9,13 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <utility>
 #include <vector>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 namespace Paper {
 namespace {
@@ -23,6 +29,39 @@ struct FrameData {
   VkSemaphore imageAvailable = VK_NULL_HANDLE;
   VkFence inFlight = VK_NULL_HANDLE;
 };
+
+std::filesystem::path executableDir() {
+#ifdef __APPLE__
+  std::uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::vector<char> buffer(size);
+  if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+    return std::filesystem::path(buffer.data()).parent_path();
+  }
+#endif
+  return {};
+}
+
+std::filesystem::path resolveAssetRoot(const std::filesystem::path &configured) {
+  if (!configured.empty()) {
+    return configured;
+  }
+  const std::filesystem::path exeDir = executableDir();
+  if (!exeDir.empty() && std::filesystem::exists(exeDir / "shaders")) {
+    return exeDir;
+  }
+  return PAPER_DEFAULT_ASSET_ROOT;
+}
+
+VkShaderStageFlagBits toVk(ShaderStage stage) {
+  switch (stage) {
+  case ShaderStage::Vertex:
+    return VK_SHADER_STAGE_VERTEX_BIT;
+  case ShaderStage::Fragment:
+    return VK_SHADER_STAGE_FRAGMENT_BIT;
+  }
+  return VK_SHADER_STAGE_VERTEX_BIT;
+}
 
 void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageLayout from,
                      VkImageLayout to, VkPipelineStageFlags2 srcStage,
@@ -59,6 +98,9 @@ struct Renderer::Impl {
   // the frame that signalled it has finished.
   std::vector<VkSemaphore> renderFinished;
   std::uint32_t frameIndex = 0;
+  // Temporary until meshes and materials exist (see issue "Mesh with camera").
+  VkPipelineLayout trianglePipelineLayout = VK_NULL_HANDLE;
+  VkPipeline trianglePipeline = VK_NULL_HANDLE;
 
   Impl(const Window &w, RendererConfig c) : window(w), config(std::move(c)) {}
   ~Impl();
@@ -71,6 +113,7 @@ struct Renderer::Impl {
   std::expected<void, Error> init();
   std::expected<void, Error> createFrameResources();
   std::expected<void, Error> createRenderFinishedSemaphores();
+  std::expected<void, Error> createTrianglePipeline();
   void destroyRenderFinishedSemaphores();
   // Returns false while the window is minimised.
   std::expected<bool, Error> recreateSwapchain();
@@ -84,6 +127,8 @@ Renderer::Impl::~Impl() {
   }
   const VkDevice device = context->device();
   vkDeviceWaitIdle(device);
+  vkDestroyPipeline(device, trianglePipeline, nullptr);
+  vkDestroyPipelineLayout(device, trianglePipelineLayout, nullptr);
   destroyRenderFinishedSemaphores();
   for (FrameData &frame : frames) {
     vkDestroyFence(device, frame.inFlight, nullptr);
@@ -108,7 +153,111 @@ std::expected<void, Error> Renderer::Impl::init() {
   if (auto frameResources = createFrameResources(); !frameResources) {
     return frameResources;
   }
-  return createRenderFinishedSemaphores();
+  if (auto semaphores = createRenderFinishedSemaphores(); !semaphores) {
+    return semaphores;
+  }
+  return createTrianglePipeline();
+}
+
+std::expected<void, Error> Renderer::Impl::createTrianglePipeline() {
+  const std::filesystem::path shaderDir =
+      resolveAssetRoot(config.assetRoot) / "shaders";
+  auto vertex = Shader::load(*context, shaderDir / "triangle.vert.spv",
+                             ShaderStage::Vertex);
+  if (!vertex) {
+    return std::unexpected(vertex.error());
+  }
+  auto fragment = Shader::load(*context, shaderDir / "triangle.frag.spv",
+                               ShaderStage::Fragment);
+  if (!fragment) {
+    return std::unexpected(fragment.error());
+  }
+
+  std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+  const std::array<const Shader *, 2> shaders{vertex->get(), fragment->get()};
+  for (std::size_t i = 0; i < stages.size(); ++i) {
+    stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[i].stage = toVk(shaders[i]->stage());
+    stages[i].module = shaders[i]->module();
+    stages[i].pName = "main";
+  }
+
+  VkPipelineLayoutCreateInfo layoutInfo{};
+  layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  if (auto r = vkCheck(vkCreatePipelineLayout(context->device(), &layoutInfo,
+                                              nullptr, &trianglePipelineLayout),
+                       kCode, "vkCreatePipelineLayout");
+      !r) {
+    return r;
+  }
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.scissorCount = 1;
+
+  // Right-handed, Y up: the negative-height viewport flips Y, so
+  // counter-clockwise triangles are front faces (see CONTEXT.md).
+  VkPipelineRasterizationStateCreateInfo rasterization{};
+  rasterization.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+  rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
+  rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterization.lineWidth = 1.0F;
+
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  blendAttachment.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo colorBlend{};
+  colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlend.attachmentCount = 1;
+  colorBlend.pAttachments = &blendAttachment;
+
+  const std::array<VkDynamicState, 2> dynamicStates{VK_DYNAMIC_STATE_VIEWPORT,
+                                                    VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamicState.dynamicStateCount =
+      static_cast<std::uint32_t>(dynamicStates.size());
+  dynamicState.pDynamicStates = dynamicStates.data();
+
+  const VkFormat colorFormat = swapchain->format();
+  VkPipelineRenderingCreateInfo rendering{};
+  rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  rendering.colorAttachmentCount = 1;
+  rendering.pColorAttachmentFormats = &colorFormat;
+
+  VkGraphicsPipelineCreateInfo pipelineInfo{};
+  pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineInfo.pNext = &rendering;
+  pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+  pipelineInfo.pStages = stages.data();
+  pipelineInfo.pVertexInputState = &vertexInput;
+  pipelineInfo.pInputAssemblyState = &inputAssembly;
+  pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pRasterizationState = &rasterization;
+  pipelineInfo.pMultisampleState = &multisample;
+  pipelineInfo.pColorBlendState = &colorBlend;
+  pipelineInfo.pDynamicState = &dynamicState;
+  pipelineInfo.layout = trianglePipelineLayout;
+  return vkCheck(vkCreateGraphicsPipelines(context->device(), VK_NULL_HANDLE, 1,
+                                           &pipelineInfo, nullptr,
+                                           &trianglePipeline),
+                 kCode, "vkCreateGraphicsPipelines");
 }
 
 std::expected<void, Error> Renderer::Impl::createFrameResources() {
@@ -226,7 +375,21 @@ void Renderer::Impl::record(VkCommandBuffer cmd,
   renderingInfo.pColorAttachments = &colorAttachment;
 
   vkCmdBeginRendering(cmd, &renderingInfo);
-  // Draw calls go here.
+
+  // Negative height flips Y so the clip space is Y up (VK_KHR_maintenance1).
+  const VkExtent2D extent = swapchain->extent();
+  const VkViewport viewport{0.0F,
+                            static_cast<float>(extent.height),
+                            static_cast<float>(extent.width),
+                            -static_cast<float>(extent.height),
+                            0.0F,
+                            1.0F};
+  const VkRect2D scissor{{0, 0}, extent};
+  vkCmdSetViewport(cmd, 0, 1, &viewport);
+  vkCmdSetScissor(cmd, 0, 1, &scissor);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
+  vkCmdDraw(cmd, 3, 1, 0, 0);
+
   vkCmdEndRendering(cmd);
 
   transitionImage(cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,

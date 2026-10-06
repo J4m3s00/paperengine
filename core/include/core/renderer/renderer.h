@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include <expected>
+#include <filesystem>
 #include <memory>
 
 namespace Paper {
@@ -15,6 +16,9 @@ struct RendererConfig {
   VulkanConfig vulkan;
   // Linear color; the swapchain is sRGB.
   glm::vec4 clearColor{0.02F, 0.02F, 0.05F, 1.0F};
+  // Directory containing `shaders/*.spv`. Empty: `<executable dir>` if it has
+  // a `shaders` folder, otherwise the build directory (dev builds).
+  std::filesystem::path assetRoot;
 };
 
 // Owns the VulkanContext, the Swapchain and all per-frame resources.

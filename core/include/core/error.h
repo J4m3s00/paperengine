@@ -7,6 +7,8 @@ enum class ErrorCode {
   Window,
   Vulkan,
   Swapchain,
+  Io,
+  Shader,
 };
 
 struct Error {
