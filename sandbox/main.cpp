@@ -3,6 +3,8 @@
 #include "core/scene/transform_system.h"
 #include "core/window.h"
 
+#include "fly_camera.h"
+
 #include <spdlog/spdlog.h>
 
 int main() {
@@ -43,19 +45,27 @@ int main() {
   scene.registry().get<Paper::Transform>(grandchild).scale = glm::vec3(0.5F);
   scene.setParent(grandchild, child);
 
-  const auto camera = Paper::Camera::lookAt({3.0F, 2.5F, 5.0F}, {0.0F, 0.0F, 0.0F});
+  FlyCamera flyCamera({3.0F, 2.5F, 5.0F}, {0.0F, 0.0F, 0.0F});
 
+  double lastTime = (*window)->time();
   while (!(*window)->shouldClose()) {
     (*window)->update();
+    if ((*window)->keyDown(Paper::Key::Escape)) {
+      (*window)->requestClose();
+    }
 
-    const auto t = static_cast<float>((*window)->time());
+    const double now = (*window)->time();
+    flyCamera.update(**window, static_cast<float>(now - lastTime));
+    lastTime = now;
+
+    const auto t = static_cast<float>(now);
     scene.registry().get<Paper::Transform>(parent).rotation =
         glm::angleAxis(t * 0.6F, glm::vec3(0.0F, 1.0F, 0.0F));
     scene.registry().get<Paper::Transform>(child).rotation =
         glm::angleAxis(t * 1.5F, glm::vec3(1.0F, 0.0F, 0.0F));
     Paper::TransformSystem::update(scene);
 
-    if (auto rendered = (*renderer)->render(scene, camera); !rendered) {
+    if (auto rendered = (*renderer)->render(scene, flyCamera.camera()); !rendered) {
       spdlog::critical("{}", rendered.error().message);
       return 1;
     }

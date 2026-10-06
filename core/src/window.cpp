@@ -32,13 +32,62 @@ void releaseGlfw() {
     glfwTerminate();
   }
 }
+
+int toGlfw(Key key) {
+  switch (key) {
+  case Key::W:
+    return GLFW_KEY_W;
+  case Key::A:
+    return GLFW_KEY_A;
+  case Key::S:
+    return GLFW_KEY_S;
+  case Key::D:
+    return GLFW_KEY_D;
+  case Key::Q:
+    return GLFW_KEY_Q;
+  case Key::E:
+    return GLFW_KEY_E;
+  case Key::Space:
+    return GLFW_KEY_SPACE;
+  case Key::LeftShift:
+    return GLFW_KEY_LEFT_SHIFT;
+  case Key::LeftControl:
+    return GLFW_KEY_LEFT_CONTROL;
+  case Key::Escape:
+    return GLFW_KEY_ESCAPE;
+  }
+  return GLFW_KEY_UNKNOWN;
+}
+
+int toGlfw(MouseButton button) {
+  switch (button) {
+  case MouseButton::Left:
+    return GLFW_MOUSE_BUTTON_LEFT;
+  case MouseButton::Right:
+    return GLFW_MOUSE_BUTTON_RIGHT;
+  case MouseButton::Middle:
+    return GLFW_MOUSE_BUTTON_MIDDLE;
+  }
+  return GLFW_MOUSE_BUTTON_LEFT;
+}
 } // namespace
 
 struct Window::Impl {
   GLFWwindow *handle;
+  glm::dvec2 mousePosition{0.0};
+  glm::dvec2 mouseDelta{0.0};
+  glm::dvec2 scrollPending{0.0};
+  glm::dvec2 scrollDelta{0.0};
 
   // Takes over one GLFW reference acquired by the caller.
-  explicit Impl(GLFWwindow *window) : handle(window) {}
+  explicit Impl(GLFWwindow *window) : handle(window) {
+    glfwGetCursorPos(handle, &mousePosition.x, &mousePosition.y);
+    glfwSetWindowUserPointer(handle, this);
+    glfwSetScrollCallback(handle, [](GLFWwindow *w, double x, double y) {
+      static_cast<Impl *>(glfwGetWindowUserPointer(w))->scrollPending +=
+          glm::dvec2(x, y);
+    });
+  }
 
   ~Impl() {
     glfwDestroyWindow(handle);
@@ -113,6 +162,41 @@ void Window::resize(int newWidth, int newHeight) {
   glfwSetWindowSize(m_pImpl->handle, newWidth, newHeight);
 }
 
-void Window::update() { glfwPollEvents(); }
+void Window::update() {
+  const glm::dvec2 previous = m_pImpl->mousePosition;
+  glfwPollEvents();
+  glfwGetCursorPos(m_pImpl->handle, &m_pImpl->mousePosition.x,
+                   &m_pImpl->mousePosition.y);
+  m_pImpl->mouseDelta = m_pImpl->mousePosition - previous;
+  m_pImpl->scrollDelta = m_pImpl->scrollPending;
+  m_pImpl->scrollPending = glm::dvec2(0.0);
+}
+
+void Window::requestClose() {
+  glfwSetWindowShouldClose(m_pImpl->handle, GLFW_TRUE);
+}
+
+bool Window::keyDown(Key key) const {
+  return glfwGetKey(m_pImpl->handle, toGlfw(key)) == GLFW_PRESS;
+}
+
+bool Window::mouseDown(MouseButton button) const {
+  return glfwGetMouseButton(m_pImpl->handle, toGlfw(button)) == GLFW_PRESS;
+}
+
+glm::dvec2 Window::mousePosition() const { return m_pImpl->mousePosition; }
+
+glm::dvec2 Window::mouseDelta() const { return m_pImpl->mouseDelta; }
+
+glm::dvec2 Window::scrollDelta() const { return m_pImpl->scrollDelta; }
+
+void Window::setCursorMode(CursorMode mode) {
+  glfwSetInputMode(m_pImpl->handle, GLFW_CURSOR,
+                   mode == CursorMode::Captured ? GLFW_CURSOR_DISABLED
+                                                : GLFW_CURSOR_NORMAL);
+  glfwGetCursorPos(m_pImpl->handle, &m_pImpl->mousePosition.x,
+                   &m_pImpl->mousePosition.y);
+  m_pImpl->mouseDelta = glm::dvec2(0.0);
+}
 
 } // namespace Paper

@@ -1,6 +1,9 @@
 #pragma once
 
 #include "core/error.h"
+#include "core/input.h"
+
+#include <glm/glm.hpp>
 
 #include <expected>
 #include <memory>
@@ -38,7 +41,20 @@ public:
   [[nodiscard]] double time() const;
 
   void resize(int newWidth, int newHeight);
+  // Polls events and refreshes the input state below. Call once per frame.
   void update();
+  void requestClose();
+
+  // Input state as of the last update().
+  [[nodiscard]] bool keyDown(Key key) const;
+  [[nodiscard]] bool mouseDown(MouseButton button) const;
+  // Cursor position in window coordinates.
+  [[nodiscard]] glm::dvec2 mousePosition() const;
+  // Cursor movement and scroll since the previous update().
+  [[nodiscard]] glm::dvec2 mouseDelta() const;
+  [[nodiscard]] glm::dvec2 scrollDelta() const;
+  // Resets mouseDelta() so switching modes does not cause a jump.
+  void setCursorMode(CursorMode mode);
 
 private:
   struct Impl;
