@@ -116,6 +116,11 @@ public:
   // Scene::instantiate must no longer be rendered.
   void destroyModel(ModelHandle model);
 
+  // Saves the next rendered frame as a PNG (sRGB, as presented). The frame
+  // is captured by the following render() call, which waits for the GPU and
+  // returns an error if the file cannot be written.
+  void requestScreenshot(const std::filesystem::path &path);
+
   // Renders and presents one frame of `scene` seen through `camera`. Run
   // TransformSystem::update(scene) first. Handles resize and minimise
   // internally; while the window is minimised this is a no-op.

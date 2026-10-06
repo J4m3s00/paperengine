@@ -49,7 +49,7 @@ void GpuBuffer::destroy() {
 
 std::expected<GpuBuffer, Error>
 GpuBuffer::create(const VulkanContext &context, VkDeviceSize size,
-                  VkBufferUsageFlags usage, bool hostVisible) {
+                  VkBufferUsageFlags usage, bool hostVisible, bool hostRead) {
   VkBufferCreateInfo bufferInfo{};
   bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bufferInfo.size = size;
@@ -58,7 +58,8 @@ GpuBuffer::create(const VulkanContext &context, VkDeviceSize size,
   VmaAllocationCreateInfo allocInfo{};
   allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
   if (hostVisible) {
-    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+    allocInfo.flags = (hostRead ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                                : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT) |
                       VMA_ALLOCATION_CREATE_MAPPED_BIT;
   }
 
@@ -79,6 +80,10 @@ GpuBuffer::create(const VulkanContext &context, VkDeviceSize size,
 
 void GpuBuffer::flush() const {
   vmaFlushAllocation(m_allocator, m_allocation, 0, VK_WHOLE_SIZE);
+}
+
+void GpuBuffer::invalidate() const {
+  vmaInvalidateAllocation(m_allocator, m_allocation, 0, VK_WHOLE_SIZE);
 }
 
 GpuImage::~GpuImage() { destroy(); }

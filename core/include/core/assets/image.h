@@ -22,4 +22,7 @@ struct Image {
 decodeImage(std::span<const std::uint8_t> bytes);
 [[nodiscard]] std::expected<Image, Error>
 loadImage(const std::filesystem::path &path);
+// Writes `image` as an 8-bit RGBA PNG.
+[[nodiscard]] std::expected<void, Error>
+savePng(const std::filesystem::path &path, const Image &image);
 } // namespace Paper

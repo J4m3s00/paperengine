@@ -50,7 +50,8 @@ std::expected<void, Error> Swapchain::build(int width, int height) {
           .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
           .set_desired_extent(static_cast<std::uint32_t>(width),
                               static_cast<std::uint32_t>(height))
-          .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+          .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
           .set_old_swapchain(m_swapchain)
           .build();
   auto result = unwrap(std::move(built), ErrorCode::Swapchain, "Swapchain");

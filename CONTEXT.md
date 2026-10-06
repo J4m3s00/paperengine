@@ -13,6 +13,7 @@ Vocabulary for the rendering pipeline. Use these terms in issues, code and tests
 - **Material**: Shader + parameter values + textures + render state (cull mode, alpha mode, depth test). Parameters are set by name and validated against the Shader's reflection.
 - **Texture**: Sampled 2D image with a full mip chain, created from an `Image` (RGBA8) with a `ColorSpace` and `SamplerSettings`. `TextureHandle`. See ADR 0006.
 - **Texture slot**: A `sampler2D` variable in a shader's set 1 (binding >= 1), assigned by name with `setMaterialTexture`. Unassigned slots use a **default texture** (white, or flat normal for slots named `*normal*`).
+- **Light**: An entity with a `DirectionalLight {color, intensity}`; it shines along the entity's local -Z. The Scene also has a constant `ambientLight`. See ADR 0008.
 - **Render state**: Part of a Material. The Renderer caches pipelines by (shader, render state, vertex layout, attachment formats).
 - **Model**: Result of `Renderer::loadModel(path, shader)` for a glTF/GLB file: a plain-data node tree (`Model`/`ModelNode`) plus the meshes, materials and textures it owns (`ModelHandle`). `scene.instantiate(renderer.model(handle))` creates the entities with their hierarchy and returns the root entity. See ADR 0007.
 - **Frame in flight**: One of 2 CPU-side frames prepared while the GPU renders the previous one. Per-frame resources (UBO copies, command buffers, sync objects) exist once per frame in flight.

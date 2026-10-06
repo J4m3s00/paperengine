@@ -28,6 +28,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -48,15 +49,28 @@ constexpr std::uint32_t kMaxMaterials = 1024;
 constexpr std::uint32_t kMaxTextureSlots = 8; // Per shader (set 1 bindings).
 constexpr float kMaxAnisotropy = 4.0F;
 
-// Set 0, binding 0 (see ADR 0004). Matches `FrameData` in mesh.vert.
+constexpr std::size_t kMaxLights = 8;
+
+// Matches `Light` in shaders/include/frame.glsl.
+struct GpuLight {
+  glm::vec4 vector;         // xyz: direction of travel, w: 0 = directional.
+  glm::vec4 colorIntensity; // rgb: color, a: intensity.
+};
+
+// Set 0, binding 0 (see ADR 0004). Matches `FrameData` in
+// shaders/include/frame.glsl (std140).
 struct FrameUniforms {
   glm::mat4 view;
   glm::mat4 proj;
   glm::mat4 viewProj;
   glm::vec4 cameraPosition;
+  glm::vec4 ambient;
+  glm::ivec4 lightCount;
+  std::array<GpuLight, kMaxLights> lights;
 };
+static_assert(sizeof(FrameUniforms) == 3 * 64 + 3 * 16 + kMaxLights * 32);
 
-// Per-object push constants. Matches `Push` in mesh.vert.
+// Per-object push constants. Matches `Push` in pbr.vert.
 struct PushConstants {
   glm::mat4 model;
   glm::mat4 normalMatrix;
@@ -271,6 +285,10 @@ struct Renderer::Impl {
   };
   std::deque<Pending> pending;
   std::vector<DrawItem> drawList;
+  bool warnedAboutLightLimit = false;
+  // Screenshot: requested by the user, captured by the next render().
+  std::optional<std::filesystem::path> screenshotPath;
+  GpuBuffer screenshotBuffer;
 
   Impl(const Window &w, RendererConfig c)
       : window(w), config(std::move(c)),
@@ -332,6 +350,7 @@ struct Renderer::Impl {
 
   // Brings the UBO and texture descriptors of this frame's copy up to date.
   void updateMaterial(MaterialResource &material, const ShaderResource &shader);
+  std::expected<void, Error> saveScreenshot();
   std::expected<void, Error> render(const Scene &scene, const Camera &camera);
   void record(VkCommandBuffer cmd, const FrameData &frame,
               std::uint32_t imageIndex) const;
@@ -1211,14 +1230,83 @@ void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
 
   vkCmdEndRendering(cmd);
 
-  transitionImage(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_NONE, 0);
+  if (screenshotBuffer.handle() != VK_NULL_HANDLE) {
+    transitionImage(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.imageExtent = {extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           screenshotBuffer.handle(), 1, &copy);
+    // Make the copy visible to the host read after the fence wait.
+    VkMemoryBarrier2 hostBarrier{};
+    hostBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    hostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    hostBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    hostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    hostBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo hostDependency{};
+    hostDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    hostDependency.memoryBarrierCount = 1;
+    hostDependency.pMemoryBarriers = &hostBarrier;
+    vkCmdPipelineBarrier2(cmd, &hostDependency);
+    transitionImage(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+  } else {
+    transitionImage(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_NONE, 0);
+  }
 
   vkEndCommandBuffer(cmd);
+}
+
+// Waits for the frame just submitted, then writes its pixels to the requested
+// PNG. Called with the capture buffer filled by that frame.
+std::expected<void, Error> Renderer::Impl::saveScreenshot() {
+  // The frame that was submitted last used the slot before frameIndex advances.
+  const FrameData &frame = frames[frameIndex];
+  if (auto r = vkCheck(vkWaitForFences(context->device(), 1, &frame.inFlight,
+                                       VK_TRUE, UINT64_MAX),
+                       kCode, "vkWaitForFences (screenshot)");
+      !r) {
+    return r;
+  }
+  screenshotBuffer.invalidate();
+
+  const VkExtent2D extent = swapchain->extent();
+  Image image;
+  image.width = extent.width;
+  image.height = extent.height;
+  const std::size_t byteCount = static_cast<std::size_t>(extent.width) * extent.height * 4;
+  image.pixels.resize(byteCount);
+  std::memcpy(image.pixels.data(), screenshotBuffer.mapped(), byteCount);
+
+  const VkFormat format = swapchain->format();
+  if (format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM) {
+    for (std::size_t i = 0; i < byteCount; i += 4) {
+      std::swap(image.pixels[i], image.pixels[i + 2]);
+    }
+  }
+  for (std::size_t i = 3; i < byteCount; i += 4) {
+    image.pixels[i] = 255;
+  }
+
+  const std::filesystem::path path = *screenshotPath;
+  screenshotBuffer = GpuBuffer();
+  screenshotPath.reset();
+  return savePng(path, image);
 }
 
 std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
@@ -1265,6 +1353,27 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
       camera.nearPlane, camera.farPlane);
   uniforms.viewProj = uniforms.proj * uniforms.view;
   uniforms.cameraPosition = glm::vec4(camera.position, 1.0F);
+  uniforms.ambient = glm::vec4(scene.ambientLight, 0.0F);
+
+  // Lights: a list so other kinds (point, spot) can be added later.
+  std::size_t lightCount = 0;
+  for (const auto [entity, world, light] :
+       scene.registry().view<const WorldTransform, const DirectionalLight>().each()) {
+    (void)entity;
+    if (lightCount == kMaxLights) {
+      if (!warnedAboutLightLimit) {
+        spdlog::warn("More than {} lights in the scene; ignoring the rest",
+                     kMaxLights);
+        warnedAboutLightLimit = true;
+      }
+      break;
+    }
+    const glm::vec3 direction =
+        glm::normalize(glm::mat3(world.matrix) * glm::vec3(0.0F, 0.0F, -1.0F));
+    uniforms.lights[lightCount++] = {glm::vec4(direction, 0.0F),
+                                     glm::vec4(light.color, light.intensity)};
+  }
+  uniforms.lightCount = glm::ivec4(static_cast<int>(lightCount), 0, 0, 0);
   std::memcpy(frame.uniforms.mapped(), &uniforms, sizeof(uniforms));
   frame.uniforms.flush();
 
@@ -1328,6 +1437,17 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
     return r;
   }
 
+  if (screenshotPath) {
+    const VkExtent2D captureExtent = swapchain->extent();
+    auto buffer = GpuBuffer::create(
+        *context, static_cast<VkDeviceSize>(captureExtent.width) * captureExtent.height * 4,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
+    if (!buffer) {
+      return std::unexpected(buffer.error());
+    }
+    screenshotBuffer = std::move(*buffer);
+  }
+
   record(frame.commandBuffer, frame, imageIndex);
 
   VkSemaphoreSubmitInfo waitInfo{};
@@ -1361,6 +1481,12 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
   }
   ++frameNumber;
 
+  // Written before presenting; a failure is reported after the frame is out.
+  std::expected<void, Error> screenshot;
+  if (screenshotBuffer.handle() != VK_NULL_HANDLE) {
+    screenshot = saveScreenshot();
+  }
+
   const VkSwapchainKHR swapchainHandle = swapchain->handle();
   VkPresentInfoKHR presentInfo{};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1373,6 +1499,9 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
       vkQueuePresentKHR(context->presentQueue(), &presentInfo);
   frameIndex = (frameIndex + 1) % kFramesInFlight;
 
+  if (!screenshot) {
+    return screenshot;
+  }
   if (presented == VK_ERROR_OUT_OF_DATE_KHR) {
     auto recreated = recreateSwapchain();
     if (!recreated) {
@@ -1508,6 +1637,10 @@ void Renderer::destroyModel(ModelHandle model) {
   if (taken) {
     destroyModelResources(*this, *taken);
   }
+}
+
+void Renderer::requestScreenshot(const std::filesystem::path &path) {
+  m_pImpl->screenshotPath = path;
 }
 
 std::expected<void, Error> Renderer::render(const Scene &scene,

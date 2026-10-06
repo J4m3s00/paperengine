@@ -23,6 +23,7 @@ add_library(core STATIC
   src/renderer/pipeline.cpp
   src/renderer/shader_reflection.cpp
   src/assets/image.cpp
+  src/assets/image_write.cpp
   src/assets/gltf_loader.cpp
   src/scene/scene.cpp
   src/scene/transform_system.cpp
@@ -41,7 +42,8 @@ get_target_property(VMA_INCLUDE_DIRS GPUOpen::VulkanMemoryAllocator INTERFACE_IN
 target_include_directories(core SYSTEM PRIVATE ${VMA_INCLUDE_DIRS})
 
 # stb_image.h is downloaded as a single file into stb_image_SOURCE_DIR.
-target_include_directories(core SYSTEM PRIVATE ${stb_image_SOURCE_DIR})
+target_include_directories(core SYSTEM PRIVATE ${stb_image_SOURCE_DIR}
+                                               ${stb_image_write_SOURCE_DIR})
 
 # Same for SPIRV-Reflect.
 get_target_property(SPIRV_REFLECT_INCLUDE_DIRS spirv-reflect-static INTERFACE_INCLUDE_DIRECTORIES)
@@ -49,8 +51,8 @@ target_include_directories(core SYSTEM PRIVATE ${SPIRV_REFLECT_INCLUDE_DIRS})
 
 # Compile GLSL shaders to SPIR-V in <build>/shaders at build time.
 set(PAPER_SHADER_SOURCES
-  shaders/mesh.vert
-  shaders/mesh.frag)
+  shaders/pbr.vert
+  shaders/pbr.frag)
 set(PAPER_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 set(PAPER_SHADER_OUTPUTS)
 foreach(shader IN LISTS PAPER_SHADER_SOURCES)
@@ -60,7 +62,9 @@ foreach(shader IN LISTS PAPER_SHADER_SOURCES)
     OUTPUT ${shader_out}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PAPER_SHADER_OUTPUT_DIR}
     COMMAND Vulkan::glslc ${CMAKE_CURRENT_SOURCE_DIR}/${shader} -o ${shader_out}
+            -MD -MF ${shader_out}.d -MT ${shader_out}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${shader}
+    DEPFILE ${shader_out}.d
     COMMENT "glslc ${shader}"
     VERBATIM)
   list(APPEND PAPER_SHADER_OUTPUTS ${shader_out})

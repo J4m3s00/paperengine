@@ -28,10 +28,11 @@ public:
   GpuBuffer &operator=(GpuBuffer &&other) noexcept;
 
   // hostVisible: persistently mapped, sequential CPU writes (staging, UBOs).
+  // hostRead additionally allows random CPU reads (readback buffers).
   // Otherwise device-local memory.
   [[nodiscard]] static std::expected<GpuBuffer, Error>
   create(const VulkanContext &context, VkDeviceSize size,
-         VkBufferUsageFlags usage, bool hostVisible);
+         VkBufferUsageFlags usage, bool hostVisible, bool hostRead = false);
 
   [[nodiscard]] VkBuffer handle() const { return m_buffer; }
   [[nodiscard]] VkDeviceSize size() const { return m_size; }
@@ -40,6 +41,8 @@ public:
 
   // Flushes CPU writes to a mapped buffer (needed on non-coherent memory).
   void flush() const;
+  // Makes GPU writes visible to CPU reads of a mapped buffer.
+  void invalidate() const;
 
 private:
   void destroy();

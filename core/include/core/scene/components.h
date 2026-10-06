@@ -34,6 +34,22 @@ struct WorldTransform {
   glm::mat4 matrix{1.0F};
 };
 
+// Directional light. It shines along the entity's local -Z axis (like a
+// camera looks), so rotate the entity's Transform to aim it; its position is
+// irrelevant. See lookRotation().
+struct DirectionalLight {
+  glm::vec3 color{1.0F};
+  float intensity = 3.0F;
+};
+
+// Rotation that makes the local -Z axis point along `direction`.
+[[nodiscard]] inline glm::quat
+lookRotation(const glm::vec3 &direction,
+             const glm::vec3 &up = {0.0F, 1.0F, 0.0F}) {
+  return glm::quat_cast(
+      glm::inverse(glm::lookAt(glm::vec3(0.0F), direction, up)));
+}
+
 struct MeshRenderer {
   MeshHandle mesh;
   MaterialHandle material;

@@ -24,6 +24,10 @@ public:
   // outlive the entities.
   entt::entity instantiate(const Model &model);
 
+  // Constant ambient radiance added to every surface (there is no
+  // image-based lighting).
+  glm::vec3 ambientLight{0.03F};
+
   [[nodiscard]] entt::registry &registry() { return m_registry; }
   [[nodiscard]] const entt::registry &registry() const { return m_registry; }
 
