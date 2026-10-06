@@ -23,10 +23,11 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 - `core/include/core/*.h` is the public header root (included as `"core/xxx.h"`); implementations are in `core/src/`. New `.cpp` files must be added to the `add_library(core ...)` list in `core/CMakeLists.txt` (no globbing).
 - Dependency visibility matters: `glfw`, `glm`, `spdlog`, `Vulkan` are PUBLIC; `vk-bootstrap` and VMA are PRIVATE. Headers must therefore not include `VkBootstrap.h` or `vk_mem_alloc.h`; `vulkan_context.h` forward-declares `VmaAllocator`. `GLFW_INCLUDE_NONE` is defined for core.
 - VMA is compiled once in `src/vma_impl.cpp` (`VMA_IMPLEMENTATION`); other TUs include `vk_mem_alloc.h` with `VMA_VULKAN_VERSION 1003000` defined the same way. Its include dirs are added as SYSTEM to silence third-party warnings.
+- Errors are `std::expected<T, Paper::Error>` (`core/error.h`, see `docs/adr/0001-expected-for-error-handling.md`). Fallible types (`Window`, `VulkanContext`, `Swapchain`) have private constructors and a static `create(...)` returning `std::expected<std::unique_ptr<T>, Error>`; they stay non-copyable/non-movable. vk-bootstrap results are translated by `unwrap` in `core/src/vkb_error.h`.
 - `Window` uses pimpl (GLFW details hidden in `Window::Impl`), exposes `nativeHandle()` for surface creation.
-- `VulkanContext` owns instance, debug messenger, surface, physical/logical device, queues and VMA allocator, built via vk-bootstrap (errors are thrown as `std::runtime_error` through the `unwrap` helper). Requires Vulkan 1.3 with `dynamicRendering` and `synchronization2`. Validation layers default on unless `NDEBUG`. Non-copyable/non-movable; must outlive everything created from it.
-- `Swapchain` borrows `const VulkanContext&` and builds images/views; `recreate(window)` returns false (keeping the old swapchain) while the framebuffer is 0×0. The sandbox loop currently triggers `recreate` by comparing framebuffer size to swapchain extent.
-- Destruction order is by reverse declaration in `main` (Window → VulkanContext → Swapchain), so construct in that order.
+- `VulkanContext` owns instance, debug messenger, surface, physical/logical device, queues and VMA allocator, built via vk-bootstrap. Requires Vulkan 1.3 with `dynamicRendering` and `synchronization2`. Validation layers default on unless `NDEBUG`. Non-copyable/non-movable; must outlive everything created from it.
+- `Swapchain` borrows `const VulkanContext&` and builds images/views; `recreate(window)` returns `expected<bool, Error>`: `false` (keeping the old swapchain) while the framebuffer is 0×0. The sandbox loop currently triggers `recreate` by comparing framebuffer size to swapchain extent.
+- Destruction order is by reverse declaration in `main` (Window → VulkanContext → Swapchain), so create them in that order.
 - `core/src/engine.cpp` and `core/include/core/engine.h` are placeholders (essentially empty).
 
 ## Conventions

@@ -5,23 +5,14 @@
 #define VMA_VULKAN_VERSION 1003000
 #include <vk_mem_alloc.h>
 
-#include "VkBootstrap.h"
+#include "vkb_error.h"
 #include <GLFW/glfw3.h>
 #include <spdlog/spdlog.h>
 
-#include <stdexcept>
 #include <string>
 
 namespace Paper {
 namespace {
-
-template <typename T> T unwrap(vkb::Result<T> result, const char *what) {
-  if (!result) {
-    throw std::runtime_error(std::string(what) + ": " +
-                             result.error().message());
-  }
-  return std::move(result.value());
-}
 
 VKAPI_ATTR VkBool32 VKAPI_CALL
 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -41,9 +32,22 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 }
 } // namespace
 
-VulkanContext::VulkanContext(const Window &window, const VulkanConfig &config) {
+std::expected<std::unique_ptr<VulkanContext>, Error>
+VulkanContext::create(const Window &window, const VulkanConfig &config) {
+  std::unique_ptr<VulkanContext> context(new VulkanContext());
+  if (auto initialised = context->init(window, config); !initialised) {
+    return std::unexpected(initialised.error());
+  }
+  return context;
+}
+
+std::expected<void, Error> VulkanContext::init(const Window &window,
+                                               const VulkanConfig &config) {
+  constexpr ErrorCode code = ErrorCode::Vulkan;
+
   if (glfwVulkanSupported() == GLFW_FALSE) {
-    throw std::runtime_error("GLFW: no Vulkan loader/ICD found");
+    return std::unexpected(
+        Error{code, "GLFW: no Vulkan loader/ICD found"});
   }
 
   vkb::InstanceBuilder instanceBuilder;
@@ -62,40 +66,71 @@ VulkanContext::VulkanContext(const Window &window, const VulkanConfig &config) {
         debugCallback);
   }
 
-  vkb::Instance vkbInstance = unwrap(instanceBuilder.build(), "Instance");
-  m_instance = vkbInstance.instance;
-  m_debugMessenger = vkbInstance.debug_messenger;
+  auto vkbInstance = unwrap(instanceBuilder.build(), code, "Instance");
+  if (!vkbInstance) {
+    return std::unexpected(vkbInstance.error());
+  }
+  m_instance = vkbInstance->instance;
+  m_debugMessenger = vkbInstance->debug_messenger;
 
   if (glfwCreateWindowSurface(m_instance, window.nativeHandle(), nullptr,
                               &m_surface) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create window surface");
+    return std::unexpected(Error{code, "Failed to create window surface"});
   }
 
   VkPhysicalDeviceVulkan13Features features13{};
   features13.dynamicRendering = VK_TRUE;
   features13.synchronization2 = VK_TRUE;
 
-  vkb::PhysicalDevice vkbPhysical =
-      unwrap(vkb::PhysicalDeviceSelector(vkbInstance, m_surface)
+  auto vkbPhysical =
+      unwrap(vkb::PhysicalDeviceSelector(*vkbInstance, m_surface)
                  .set_minimum_version(1, 3)
                  .set_required_features_13(features13)
                  .select(),
-             "Physical device");
-  m_physicalDevice = vkbPhysical.physical_device;
-  spdlog::info("Vulkan device: {}", vkbPhysical.name);
+             code, "Physical device");
+  if (!vkbPhysical) {
+    return std::unexpected(vkbPhysical.error());
+  }
+  m_physicalDevice = vkbPhysical->physical_device;
+  spdlog::info("Vulkan device: {}", vkbPhysical->name);
 
-  vkb::Device vkbDevice =
-      unwrap(vkb::DeviceBuilder(vkbPhysical).build(), "Logical device");
-  m_device = vkbDevice.device;
+  auto vkbDevice =
+      unwrap(vkb::DeviceBuilder(*vkbPhysical).build(), code, "Logical device");
+  if (!vkbDevice) {
+    return std::unexpected(vkbDevice.error());
+  }
+  m_device = vkbDevice->device;
 
-  m_graphicsQueue =
-      unwrap(vkbDevice.get_queue(vkb::QueueType::graphics), "Graphics queue");
-  m_graphicsFamily = unwrap(vkbDevice.get_queue_index(vkb::QueueType::graphics),
-                            "Graphics queue family");
-  m_presentQueue =
-      unwrap(vkbDevice.get_queue(vkb::QueueType::present), "Present queue");
-  m_presentFamily = unwrap(vkbDevice.get_queue_index(vkb::QueueType::present),
-                           "Present queue family");
+  auto graphicsQueue =
+      unwrap(vkbDevice->get_queue(vkb::QueueType::graphics), code,
+             "Graphics queue");
+  if (!graphicsQueue) {
+    return std::unexpected(graphicsQueue.error());
+  }
+  m_graphicsQueue = *graphicsQueue;
+
+  auto graphicsFamily =
+      unwrap(vkbDevice->get_queue_index(vkb::QueueType::graphics), code,
+             "Graphics queue family");
+  if (!graphicsFamily) {
+    return std::unexpected(graphicsFamily.error());
+  }
+  m_graphicsFamily = *graphicsFamily;
+
+  auto presentQueue = unwrap(vkbDevice->get_queue(vkb::QueueType::present),
+                             code, "Present queue");
+  if (!presentQueue) {
+    return std::unexpected(presentQueue.error());
+  }
+  m_presentQueue = *presentQueue;
+
+  auto presentFamily =
+      unwrap(vkbDevice->get_queue_index(vkb::QueueType::present), code,
+             "Present queue family");
+  if (!presentFamily) {
+    return std::unexpected(presentFamily.error());
+  }
+  m_presentFamily = *presentFamily;
 
   VmaAllocatorCreateInfo allocatorInfo{};
   allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
@@ -103,8 +138,9 @@ VulkanContext::VulkanContext(const Window &window, const VulkanConfig &config) {
   allocatorInfo.physicalDevice = m_physicalDevice;
   allocatorInfo.device = m_device;
   if (vmaCreateAllocator(&allocatorInfo, &m_allocator) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create VMA allocator");
+    return std::unexpected(Error{code, "Failed to create VMA allocator"});
   }
+  return {};
 }
 
 VulkanContext::~VulkanContext() {

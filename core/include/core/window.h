@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/error.h"
+
+#include <expected>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -15,8 +18,14 @@ struct WindowConfig {
 
 class Window {
 public:
-  Window(const WindowConfig &config);
+  [[nodiscard]] static std::expected<std::unique_ptr<Window>, Error>
+  create(const WindowConfig &config);
   ~Window();
+
+  Window(const Window &) = delete;
+  Window &operator=(const Window &) = delete;
+  Window(Window &&) = delete;
+  Window &operator=(Window &&) = delete;
 
   void setTitle(const std::string_view &title);
   [[nodiscard]] bool shouldClose() const;
@@ -31,6 +40,8 @@ public:
 
 private:
   struct Impl;
+  explicit Window(std::unique_ptr<Impl> impl);
+
   std::unique_ptr<Impl> m_pImpl;
 };
 } // namespace Paper

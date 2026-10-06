@@ -1,7 +1,11 @@
 #pragma once
 
+#include "core/error.h"
+
 #include <vulkan/vulkan.h>
 
+#include <expected>
+#include <memory>
 #include <vector>
 
 namespace Paper {
@@ -10,7 +14,8 @@ class Window;
 
 class Swapchain {
 public:
-  Swapchain(const VulkanContext &context, const Window &window);
+  [[nodiscard]] static std::expected<std::unique_ptr<Swapchain>, Error>
+  create(const VulkanContext &context, const Window &window);
   ~Swapchain();
 
   Swapchain(const Swapchain &) = delete;
@@ -20,7 +25,7 @@ public:
 
   // Returns false (and keeps the old swapchain) while the framebuffer is 0x0,
   // e.g. when the window is minimised.
-  bool recreate(const Window &window);
+  [[nodiscard]] std::expected<bool, Error> recreate(const Window &window);
 
   [[nodiscard]] VkSwapchainKHR handle() const { return m_swapchain; }
   [[nodiscard]] VkFormat format() const { return m_format; }
@@ -31,7 +36,8 @@ public:
   }
 
 private:
-  void build(int width, int height);
+  explicit Swapchain(const VulkanContext &context) : m_context(context) {}
+  std::expected<void, Error> build(int width, int height);
   void destroyImageViews();
 
   const VulkanContext &m_context;

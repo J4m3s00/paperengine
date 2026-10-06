@@ -1,7 +1,7 @@
 #include "core/window.h"
 
 #include "GLFW/glfw3.h"
-#include <stdexcept>
+#include <utility>
 #include <string_view>
 
 namespace Paper {
@@ -15,14 +15,16 @@ void glfwErrorCallback(int code, const char *description) {
   (void)description;
 }
 
-void acquireGlfw() {
+std::expected<void, Error> acquireGlfw() {
   if (g_glfwUsers == 0) {
     glfwSetErrorCallback(glfwErrorCallback);
     if (glfwInit() == GLFW_FALSE) {
-      throw std::runtime_error("Failed to initialize GLFW");
+      return std::unexpected(
+          Error{ErrorCode::Window, "Failed to initialize GLFW"});
     }
   }
   ++g_glfwUsers;
+  return {};
 }
 
 void releaseGlfw() {
@@ -35,16 +37,8 @@ void releaseGlfw() {
 struct Window::Impl {
   GLFWwindow *handle;
 
-  explicit Impl(const WindowConfig &config) {
-    acquireGlfw();
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    handle = glfwCreateWindow(config.width, config.height, config.title.c_str(),
-                              nullptr, nullptr);
-    if (handle == nullptr) {
-      releaseGlfw();
-      throw std::runtime_error("Failed to create GLFW window");
-    }
-  }
+  // Takes over one GLFW reference acquired by the caller.
+  explicit Impl(GLFWwindow *window) : handle(window) {}
 
   ~Impl() {
     glfwDestroyWindow(handle);
@@ -57,8 +51,24 @@ struct Window::Impl {
   Impl &operator=(Impl &&) = delete;
 };
 
-Window::Window(const WindowConfig &config)
-    : m_pImpl(std::make_unique<Impl>(config)) {}
+Window::Window(std::unique_ptr<Impl> impl) : m_pImpl(std::move(impl)) {}
+
+std::expected<std::unique_ptr<Window>, Error>
+Window::create(const WindowConfig &config) {
+  if (auto acquired = acquireGlfw(); !acquired) {
+    return std::unexpected(acquired.error());
+  }
+  glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+  GLFWwindow *handle = glfwCreateWindow(
+      config.width, config.height, config.title.c_str(), nullptr, nullptr);
+  if (handle == nullptr) {
+    releaseGlfw();
+    return std::unexpected(
+        Error{ErrorCode::Window, "Failed to create GLFW window"});
+  }
+  return std::unique_ptr<Window>(
+      new Window(std::make_unique<Impl>(handle)));
+}
 
 Window::~Window() = default;
 

@@ -1,8 +1,12 @@
 #pragma once
 
+#include "core/error.h"
+
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <expected>
+#include <memory>
 #include <string>
 
 struct VmaAllocator_T;
@@ -25,7 +29,8 @@ struct VulkanConfig {
 // Must outlive every object created from it (e.g. Swapchain).
 class VulkanContext {
 public:
-  VulkanContext(const Window &window, const VulkanConfig &config = {});
+  [[nodiscard]] static std::expected<std::unique_ptr<VulkanContext>, Error>
+  create(const Window &window, const VulkanConfig &config = {});
   ~VulkanContext();
 
   VulkanContext(const VulkanContext &) = delete;
@@ -51,6 +56,10 @@ public:
   }
 
 private:
+  VulkanContext() = default;
+  std::expected<void, Error> init(const Window &window,
+                                  const VulkanConfig &config);
+
   VkInstance m_instance = VK_NULL_HANDLE;
   VkDebugUtilsMessengerEXT m_debugMessenger = VK_NULL_HANDLE;
   VkSurfaceKHR m_surface = VK_NULL_HANDLE;

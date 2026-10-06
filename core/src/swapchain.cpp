@@ -3,16 +3,19 @@
 #include "core/vulkan_context.h"
 #include "core/window.h"
 
-#include "VkBootstrap.h"
-
-#include <stdexcept>
-#include <string>
+#include "vkb_error.h"
 
 namespace Paper {
 
-Swapchain::Swapchain(const VulkanContext &context, const Window &window)
-    : m_context(context) {
-  build(window.framebufferWidth(), window.framebufferHeight());
+std::expected<std::unique_ptr<Swapchain>, Error>
+Swapchain::create(const VulkanContext &context, const Window &window) {
+  std::unique_ptr<Swapchain> swapchain(new Swapchain(context));
+  if (auto built = swapchain->build(window.framebufferWidth(),
+                                    window.framebufferHeight());
+      !built) {
+    return std::unexpected(built.error());
+  }
+  return swapchain;
 }
 
 Swapchain::~Swapchain() {
@@ -22,23 +25,25 @@ Swapchain::~Swapchain() {
   }
 }
 
-bool Swapchain::recreate(const Window &window) {
+std::expected<bool, Error> Swapchain::recreate(const Window &window) {
   const int width = window.framebufferWidth();
   const int height = window.framebufferHeight();
   if (width == 0 || height == 0) {
     return false;
   }
   vkDeviceWaitIdle(m_context.device());
-  build(width, height);
+  if (auto built = build(width, height); !built) {
+    return std::unexpected(built.error());
+  }
   return true;
 }
 
-void Swapchain::build(int width, int height) {
+std::expected<void, Error> Swapchain::build(int width, int height) {
   vkb::SwapchainBuilder builder{m_context.physicalDevice(), m_context.device(),
                                 m_context.surface(),
                                 m_context.graphicsQueueFamily(),
                                 m_context.presentQueueFamily()};
-  auto result =
+  auto built =
       builder
           .set_desired_format({VK_FORMAT_B8G8R8A8_SRGB,
                                VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
@@ -48,10 +53,11 @@ void Swapchain::build(int width, int height) {
           .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
           .set_old_swapchain(m_swapchain)
           .build();
+  auto result = unwrap(std::move(built), ErrorCode::Swapchain, "Swapchain");
   if (!result) {
-    throw std::runtime_error("Swapchain: " + result.error().message());
+    return std::unexpected(result.error());
   }
-  vkb::Swapchain vkbSwapchain = std::move(result.value());
+  vkb::Swapchain vkbSwapchain = std::move(*result);
 
   destroyImageViews();
   if (m_swapchain != VK_NULL_HANDLE) {
@@ -65,10 +71,12 @@ void Swapchain::build(int width, int height) {
   auto images = vkbSwapchain.get_images();
   auto views = vkbSwapchain.get_image_views();
   if (!images || !views) {
-    throw std::runtime_error("Swapchain: failed to get images/views");
+    return std::unexpected(Error{ErrorCode::Swapchain,
+                                 "Swapchain: failed to get images/views"});
   }
   m_images = std::move(images.value());
   m_imageViews = std::move(views.value());
+  return {};
 }
 
 void Swapchain::destroyImageViews() {
