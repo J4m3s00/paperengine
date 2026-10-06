@@ -39,7 +39,11 @@ FetchContent_Declare(stb_image
   URL https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_image.h
   DOWNLOAD_NO_EXTRACT TRUE)
 
-FetchContent_MakeAvailable(glfw glm spdlog entt spirv-reflect stb_image)
+FetchContent_Declare(fastgltf
+  GIT_REPOSITORY https://github.com/spnda/fastgltf.git
+  GIT_TAG        v0.9.1)
+
+FetchContent_MakeAvailable(glfw glm spdlog entt spirv-reflect stb_image fastgltf)
 
 add_subdirectory(core)
 add_subdirectory(sandbox)

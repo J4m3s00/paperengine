@@ -10,6 +10,7 @@ enum class ErrorCode {
   Io,
   Shader,
   InvalidArgument,
+  Asset,
 };
 
 struct Error {

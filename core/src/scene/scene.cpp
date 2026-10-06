@@ -12,6 +12,34 @@ entt::entity Scene::createEntity() {
   return entity;
 }
 
+entt::entity Scene::instantiate(const Model &model) {
+  const entt::entity root = createEntity();
+
+  // Children are attached in reverse because setParent prepends, so the final
+  // sibling order matches the glTF order.
+  const auto spawn = [&](const auto &self, std::uint32_t nodeIndex,
+                         entt::entity parent) -> void {
+    const ModelNode &node = model.nodes[nodeIndex];
+    const entt::entity entity = createEntity();
+    m_registry.get<Transform>(entity) = node.transform;
+    setParent(entity, parent);
+
+    for (auto it = node.primitives.rbegin(); it != node.primitives.rend();
+         ++it) {
+      const entt::entity primitive = createEntity();
+      m_registry.emplace<MeshRenderer>(primitive, *it);
+      setParent(primitive, entity);
+    }
+    for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
+      self(self, *it, entity);
+    }
+  };
+  for (auto it = model.rootNodes.rbegin(); it != model.rootNodes.rend(); ++it) {
+    spawn(spawn, *it, root);
+  }
+  return root;
+}
+
 void Scene::setParent(entt::entity child, entt::entity parent) {
   assert(child != parent);
 #ifndef NDEBUG

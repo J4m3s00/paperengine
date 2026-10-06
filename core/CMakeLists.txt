@@ -23,6 +23,7 @@ add_library(core STATIC
   src/renderer/pipeline.cpp
   src/renderer/shader_reflection.cpp
   src/assets/image.cpp
+  src/assets/gltf_loader.cpp
   src/scene/scene.cpp
   src/scene/transform_system.cpp
   src/vma_impl.cpp)
@@ -30,7 +31,8 @@ target_include_directories(core PUBLIC include PRIVATE src)
 target_link_libraries(core
   PUBLIC  glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
   PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
-          spirv-reflect-static)
+          spirv-reflect-static
+          fastgltf::fastgltf)
 target_compile_options(core PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(core PRIVATE GLFW_INCLUDE_NONE)
 

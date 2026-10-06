@@ -6,6 +6,7 @@
 #include "core/vulkan_context.h"
 #include "core/window.h"
 
+#include "assets/gltf_loader.h"
 #include "gpu_resources.h"
 #include "pipeline.h"
 #include "resource_pool.h"
@@ -257,6 +258,7 @@ struct Renderer::Impl {
 
   ResourcePool<MeshResource, MeshHandle> meshes;
   ResourcePool<TextureResource, TextureHandle> textures;
+  ResourcePool<Model, ModelHandle> models;
   std::map<SamplerSettings, VkSampler> samplers;
   std::array<TextureHandle, 2> defaultTextures{};
   ResourcePool<ShaderResource, ShaderHandle> shaders;
@@ -345,6 +347,7 @@ Renderer::Impl::~Impl() {
   // Order matters: resources that free descriptor sets / layouts must go
   // before the pools and the device-level objects below.
   pending.clear();
+  models.clear(); // Plain handle lists; the resources die with the pools below.
   materials.clear();
   shaders.clear();
   meshes.clear();
@@ -1467,6 +1470,44 @@ std::expected<void, Error>
 Renderer::setMaterialParam(MaterialHandle material, std::string_view name,
                            const MaterialParam &value) {
   return m_pImpl->setMaterialParam(material, name, value);
+}
+
+bool Renderer::hasMaterialParam(ShaderHandle shader,
+                                std::string_view name) const {
+  const ShaderResource *resource = m_pImpl->shaders.get(shader);
+  return resource != nullptr && resource->layout.find(name) != nullptr;
+}
+
+bool Renderer::hasTextureSlot(ShaderHandle shader, std::string_view name) const {
+  const ShaderResource *resource = m_pImpl->shaders.get(shader);
+  return resource != nullptr && resource->layout.findTexture(name) >= 0;
+}
+
+std::expected<ModelHandle, Error>
+Renderer::loadModel(const std::filesystem::path &path, ShaderHandle shader) {
+  if (m_pImpl->shaders.get(shader) == nullptr) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                 "loadModel: invalid shader handle"});
+  }
+  auto model = importGltf(*this, path, shader);
+  if (!model) {
+    return std::unexpected(model.error());
+  }
+  return m_pImpl->models.create(std::move(*model));
+}
+
+const Model &Renderer::model(ModelHandle model) const {
+  const Model *resource = m_pImpl->models.get(model);
+  assert(resource != nullptr && "model: stale or invalid handle");
+  return *resource;
+}
+
+void Renderer::destroyModel(ModelHandle model) {
+  auto taken = m_pImpl->models.destroy(model);
+  assert(taken.has_value() && "destroyModel: stale or invalid handle");
+  if (taken) {
+    destroyModelResources(*this, *taken);
+  }
 }
 
 std::expected<void, Error> Renderer::render(const Scene &scene,

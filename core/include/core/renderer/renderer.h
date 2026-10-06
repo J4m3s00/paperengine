@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/assets/image.h"
+#include "core/assets/model.h"
 #include "core/error.h"
 #include "core/renderer/camera.h"
 #include "core/renderer/material.h"
@@ -77,6 +78,12 @@ public:
   // cannot be destroyed.
   void destroyTexture(TextureHandle texture);
 
+  // Whether `shader` declares a material parameter / texture slot of that name.
+  [[nodiscard]] bool hasMaterialParam(ShaderHandle shader,
+                                      std::string_view name) const;
+  [[nodiscard]] bool hasTextureSlot(ShaderHandle shader,
+                                    std::string_view name) const;
+
   // A material is a shader plus parameter values and render state.
   [[nodiscard]] std::expected<MaterialHandle, Error>
   createMaterial(ShaderHandle shader, const RenderState &state = {});
@@ -91,6 +98,23 @@ public:
   [[nodiscard]] std::expected<void, Error>
   setMaterialTexture(MaterialHandle material, std::string_view slot,
                      TextureHandle texture);
+
+  // Loads a glTF/GLB file: meshes (one per primitive), textures and materials
+  // are created on the GPU, and the node tree is returned as a Model. Imported
+  // materials use `shader`; glTF properties are mapped onto the parameters and
+  // texture slots it declares, by their glTF names:
+  //   baseColorFactor (vec4), metallicFactor, roughnessFactor, emissiveFactor
+  //   (vec3), normalScale, occlusionStrength, alphaCutoff;
+  //   baseColorTexture, metallicRoughnessTexture, normalTexture,
+  //   occlusionTexture, emissiveTexture.
+  // Names the shader does not declare are skipped. See ADR 0007.
+  [[nodiscard]] std::expected<ModelHandle, Error>
+  loadModel(const std::filesystem::path &path, ShaderHandle shader);
+  // The reference stays valid until the model is destroyed.
+  [[nodiscard]] const Model &model(ModelHandle model) const;
+  // Frees the model's meshes, materials and textures. Entities created with
+  // Scene::instantiate must no longer be rendered.
+  void destroyModel(ModelHandle model);
 
   // Renders and presents one frame of `scene` seen through `camera`. Run
   // TransformSystem::update(scene) first. Handles resize and minimise

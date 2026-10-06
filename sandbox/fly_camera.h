@@ -14,7 +14,9 @@
 // Shift to go faster, mouse wheel to change the base speed.
 class FlyCamera {
 public:
-  FlyCamera(const glm::vec3 &position, const glm::vec3 &target) {
+  FlyCamera(const glm::vec3 &position, const glm::vec3 &target,
+            float speed = 3.0F)
+      : m_speed(speed) {
     m_camera.position = position;
     const glm::vec3 forward = glm::normalize(target - position);
     m_yaw = std::atan2(-forward.x, -forward.z);
@@ -72,6 +74,7 @@ public:
   }
 
   [[nodiscard]] const Paper::Camera &camera() const { return m_camera; }
+  [[nodiscard]] Paper::Camera &camera() { return m_camera; }
 
 private:
   static constexpr float kLookSensitivity = 0.0025F;
@@ -86,6 +89,6 @@ private:
   Paper::Camera m_camera;
   float m_yaw = 0.0F;
   float m_pitch = 0.0F;
-  float m_speed = 3.0F;
+  float m_speed;
   bool m_looking = false;
 };
