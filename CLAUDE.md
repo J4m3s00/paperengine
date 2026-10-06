@@ -27,7 +27,8 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 - `Window` uses pimpl (GLFW details hidden in `Window::Impl`), exposes `nativeHandle()` for surface creation.
 - `VulkanContext` owns instance, debug messenger, surface, physical/logical device, queues and VMA allocator, built via vk-bootstrap. Requires Vulkan 1.3 with `dynamicRendering` and `synchronization2`. Validation layers default on unless `NDEBUG`. Non-copyable/non-movable; must outlive everything created from it.
 - `Swapchain` borrows `const VulkanContext&` and builds images/views; `recreate(window)` returns `expected<bool, Error>`: `false` (keeping the old swapchain) while the framebuffer is 0×0. The sandbox loop currently triggers `recreate` by comparing framebuffer size to swapchain extent.
-- Destruction order is by reverse declaration in `main` (Window → VulkanContext → Swapchain), so create them in that order.
+- `Renderer` (`core/renderer/renderer.h`, pimpl) is the public entry point: `Renderer::create(window)` builds `VulkanContext` and `Swapchain` itself and `render()` draws one frame (2 frames in flight, dynamic rendering, per-swapchain-image render-finished semaphores, resize handled internally). `sandbox` only holds `Window` and `Renderer`; the `Window` must outlive the `Renderer`.
+- Private headers live in `core/src` (on the private include path): `vkb_error.h`, `vk_check.h`.
 - `core/src/engine.cpp` and `core/include/core/engine.h` are placeholders (essentially empty).
 
 ## Conventions

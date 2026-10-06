@@ -15,8 +15,9 @@ add_library(core STATIC
   src/engine.cpp
   src/vulkan_context.cpp
   src/swapchain.cpp
+  src/renderer/renderer.cpp
   src/vma_impl.cpp)
-target_include_directories(core PUBLIC include)
+target_include_directories(core PUBLIC include PRIVATE src)
 target_link_libraries(core
   PUBLIC  glfw glm::glm spdlog::spdlog Vulkan::Vulkan
   PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator)
