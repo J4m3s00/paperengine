@@ -2,7 +2,7 @@
 
 #include <spirv_reflect.h>
 
-#include <optional>
+#include <algorithm>
 
 namespace Paper {
 namespace {
@@ -120,9 +120,9 @@ std::expected<void, Error> checkVertexInputs(SpvReflectShaderModule &module) {
   return {};
 }
 
-// Returns the material block of this stage, or nullopt if it has none.
-std::expected<std::optional<MaterialLayout>, Error>
-reflectStage(std::span<const std::uint32_t> spirv, bool isVertex) {
+// Returns the set 1 layout used by this stage (empty if it uses none).
+std::expected<MaterialLayout, Error> reflectStage(
+    std::span<const std::uint32_t> spirv, bool isVertex) {
   ReflectModule module;
   if (!module.create(spirv)) {
     return fail("SPIR-V reflection failed: invalid shader module");
@@ -138,7 +138,7 @@ reflectStage(std::span<const std::uint32_t> spirv, bool isVertex) {
   std::vector<SpvReflectDescriptorSet *> sets(setCount);
   spvReflectEnumerateDescriptorSets(&module.get(), &setCount, sets.data());
 
-  std::optional<MaterialLayout> layout;
+  MaterialLayout layout;
   for (const SpvReflectDescriptorSet *set : sets) {
     if (set->set == 0) {
       continue; // Per-frame data, owned by the Renderer.
@@ -149,29 +149,37 @@ reflectStage(std::span<const std::uint32_t> spirv, bool isVertex) {
     }
     for (std::uint32_t i = 0; i < set->binding_count; ++i) {
       const SpvReflectDescriptorBinding &binding = *set->bindings[i];
-      if (binding.binding != 0 ||
-          binding.descriptor_type != SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+      if (binding.binding == 0) {
+        if (binding.descriptor_type != SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+          return fail("Set 1 binding 0 must be the material uniform block");
+        }
+        layout.blockSize = binding.block.padded_size;
+        for (std::uint32_t m = 0; m < binding.block.member_count; ++m) {
+          const SpvReflectBlockVariable &member = binding.block.members[m];
+          if (member.name == nullptr) {
+            continue;
+          }
+          const ParamType type = decodeType(member);
+          if (type != ParamType::Unsupported &&
+              member.absolute_offset + paramSize(type) > layout.blockSize) {
+            return fail(std::string("Material parameter '") + member.name +
+                        "' does not fit in its block");
+          }
+          layout.params.push_back({member.name, type, member.absolute_offset});
+        }
+        continue;
+      }
+      if (binding.descriptor_type !=
+              SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+          binding.image.dim != SpvDim2D || binding.image.arrayed != 0 ||
+          binding.count != 1 || binding.name == nullptr) {
         return fail("Set 1 binding " + std::to_string(binding.binding) +
-                    " is not supported yet (only a uniform block at binding 0)");
+                    " must be a named sampler2D");
       }
-      MaterialLayout result;
-      result.blockSize = binding.block.padded_size;
-      for (std::uint32_t m = 0; m < binding.block.member_count; ++m) {
-        const SpvReflectBlockVariable &member = binding.block.members[m];
-        if (member.name == nullptr) {
-          continue;
-        }
-        const ParamType type = decodeType(member);
-        if (type != ParamType::Unsupported &&
-            member.absolute_offset + paramSize(type) > result.blockSize) {
-          return fail(std::string("Material parameter '") + member.name +
-                      "' does not fit in its block");
-        }
-        result.params.push_back({member.name, type, member.absolute_offset});
-      }
-      layout = std::move(result);
+      layout.textures.push_back({binding.name, binding.binding});
     }
   }
+  std::ranges::sort(layout.textures, {}, &TextureSlotInfo::binding);
   return layout;
 }
 } // namespace
@@ -224,6 +232,15 @@ const ParamInfo *MaterialLayout::find(std::string_view name) const {
   return nullptr;
 }
 
+int MaterialLayout::findTexture(std::string_view name) const {
+  for (std::size_t i = 0; i < textures.size(); ++i) {
+    if (textures[i].name == name) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 std::expected<MaterialLayout, Error>
 reflectMaterialLayout(std::span<const std::uint32_t> vertexSpirv,
                       std::span<const std::uint32_t> fragmentSpirv) {
@@ -236,25 +253,38 @@ reflectMaterialLayout(std::span<const std::uint32_t> vertexSpirv,
     return std::unexpected(fragment.error());
   }
 
-  if (vertex->has_value() && fragment->has_value()) {
-    const MaterialLayout &a = **vertex;
-    const MaterialLayout &b = **fragment;
-    bool same = a.blockSize == b.blockSize && a.params.size() == b.params.size();
-    for (std::size_t i = 0; same && i < a.params.size(); ++i) {
-      same = a.params[i].name == b.params[i].name &&
-             a.params[i].type == b.params[i].type &&
-             a.params[i].offset == b.params[i].offset;
+  // Merge: the uniform block may appear in both stages but must be identical;
+  // texture slots are the union (same binding => same name).
+  MaterialLayout merged = std::move(*fragment);
+  if (vertex->blockSize > 0) {
+    if (merged.blockSize == 0) {
+      merged.blockSize = vertex->blockSize;
+      merged.params = std::move(vertex->params);
+    } else {
+      bool same = merged.blockSize == vertex->blockSize &&
+                  merged.params.size() == vertex->params.size();
+      for (std::size_t i = 0; same && i < merged.params.size(); ++i) {
+        same = merged.params[i].name == vertex->params[i].name &&
+               merged.params[i].type == vertex->params[i].type &&
+               merged.params[i].offset == vertex->params[i].offset;
+      }
+      if (!same) {
+        return fail(
+            "Vertex and fragment shader declare different material blocks");
+      }
     }
-    if (!same) {
-      return fail("Vertex and fragment shader declare different material blocks");
+  }
+  for (TextureSlotInfo &slot : vertex->textures) {
+    const auto existing = std::ranges::find(merged.textures, slot.binding,
+                                            &TextureSlotInfo::binding);
+    if (existing == merged.textures.end()) {
+      merged.textures.push_back(std::move(slot));
+    } else if (existing->name != slot.name) {
+      return fail("Set 1 binding " + std::to_string(slot.binding) +
+                  " has different names in the vertex and fragment shader");
     }
   }
-  if (fragment->has_value()) {
-    return std::move(**fragment);
-  }
-  if (vertex->has_value()) {
-    return std::move(**vertex);
-  }
-  return MaterialLayout{};
+  std::ranges::sort(merged.textures, {}, &TextureSlotInfo::binding);
+  return merged;
 }
 } // namespace Paper

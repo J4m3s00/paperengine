@@ -82,9 +82,13 @@ std::expected<void, Error> VulkanContext::init(const Window &window,
   features13.dynamicRendering = VK_TRUE;
   features13.synchronization2 = VK_TRUE;
 
+  VkPhysicalDeviceFeatures features{};
+  features.samplerAnisotropy = VK_TRUE;
+
   auto vkbPhysical =
       unwrap(vkb::PhysicalDeviceSelector(*vkbInstance, m_surface)
                  .set_minimum_version(1, 3)
+                 .set_required_features(features)
                  .set_required_features_13(features13)
                  .select(),
              code, "Physical device");
@@ -93,6 +97,9 @@ std::expected<void, Error> VulkanContext::init(const Window &window,
   }
   m_physicalDevice = vkbPhysical->physical_device;
   spdlog::info("Vulkan device: {}", vkbPhysical->name);
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
+  m_maxSamplerAnisotropy = properties.limits.maxSamplerAnisotropy;
 
   auto vkbDevice =
       unwrap(vkb::DeviceBuilder(*vkbPhysical).build(), code, "Logical device");

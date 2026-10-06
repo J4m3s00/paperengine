@@ -11,6 +11,8 @@ Vocabulary for the rendering pipeline. Use these terms in issues, code and tests
 - **Mesh**: One vertex buffer + one index buffer = one draw. A glTF mesh with N primitives becomes N Meshes at import.
 - **Shader**: Compiled SPIR-V plus its reflection data. GLSL sources live in `core/shaders/` and are compiled by `glslc` at build time.
 - **Material**: Shader + parameter values + textures + render state (cull mode, alpha mode, depth test). Parameters are set by name and validated against the Shader's reflection.
+- **Texture**: Sampled 2D image with a full mip chain, created from an `Image` (RGBA8) with a `ColorSpace` and `SamplerSettings`. `TextureHandle`. See ADR 0006.
+- **Texture slot**: A `sampler2D` variable in a shader's set 1 (binding >= 1), assigned by name with `setMaterialTexture`. Unassigned slots use a **default texture** (white, or flat normal for slots named `*normal*`).
 - **Render state**: Part of a Material. The Renderer caches pipelines by (shader, render state, vertex layout, attachment formats).
 - **Model**: Result of `loadModel(path)` for a glTF file: meshes, materials, textures and a node tree. `scene.instantiate(model)` creates the entities with their hierarchy and returns the root entity.
 - **Frame in flight**: One of 2 CPU-side frames prepared while the GPU renders the previous one. Per-frame resources (UBO copies, command buffers, sync objects) exist once per frame in flight.

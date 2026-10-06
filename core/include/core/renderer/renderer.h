@@ -1,10 +1,12 @@
 #pragma once
 
+#include "core/assets/image.h"
 #include "core/error.h"
 #include "core/renderer/camera.h"
 #include "core/renderer/material.h"
 #include "core/renderer/mesh.h"
 #include "core/renderer/shader.h"
+#include "core/renderer/texture.h"
 #include "core/vulkan_context.h"
 
 #include <glm/glm.hpp>
@@ -55,6 +57,26 @@ public:
   // The shader must not be used by any live material.
   void destroyShader(ShaderHandle shader);
 
+  // Uploads an RGBA8 image as a sampled texture with a full mip chain.
+  [[nodiscard]] std::expected<TextureHandle, Error>
+  createTexture(const Image &image, ColorSpace colorSpace,
+                const SamplerSettings &sampler = {});
+  // Decodes the image file at `path` (relative paths are relative to the
+  // working directory) and uploads it.
+  [[nodiscard]] std::expected<TextureHandle, Error>
+  loadTexture(const std::filesystem::path &path, ColorSpace colorSpace,
+              const SamplerSettings &sampler = {});
+  // Like loadTexture, but on failure logs a warning and returns the default
+  // texture instead.
+  [[nodiscard]] TextureHandle
+  loadTextureOrDefault(const std::filesystem::path &path, ColorSpace colorSpace,
+                       DefaultTexture fallback,
+                       const SamplerSettings &sampler = {});
+  [[nodiscard]] TextureHandle defaultTexture(DefaultTexture which) const;
+  // The texture must not be assigned to any live material; default textures
+  // cannot be destroyed.
+  void destroyTexture(TextureHandle texture);
+
   // A material is a shader plus parameter values and render state.
   [[nodiscard]] std::expected<MaterialHandle, Error>
   createMaterial(ShaderHandle shader, const RenderState &state = {});
@@ -64,6 +86,11 @@ public:
   [[nodiscard]] std::expected<void, Error>
   setMaterialParam(MaterialHandle material, std::string_view name,
                    const MaterialParam &value);
+  // Assigns a texture to a named sampler2D slot of the shader. Unassigned slots
+  // use a default texture (see DefaultTexture).
+  [[nodiscard]] std::expected<void, Error>
+  setMaterialTexture(MaterialHandle material, std::string_view slot,
+                     TextureHandle texture);
 
   // Renders and presents one frame of `scene` seen through `camera`. Run
   // TransformSystem::update(scene) first. Handles resize and minimise

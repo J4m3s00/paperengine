@@ -34,7 +34,12 @@ set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "" FORCE)
 set(SPIRV_REFLECT_STATIC_LIB ON CACHE BOOL "" FORCE)
 set(SPIRV_REFLECT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(glfw glm spdlog entt spirv-reflect)
+# stb_image is a single header; fetch just that file at a pinned commit.
+FetchContent_Declare(stb_image
+  URL https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_image.h
+  DOWNLOAD_NO_EXTRACT TRUE)
+
+FetchContent_MakeAvailable(glfw glm spdlog entt spirv-reflect stb_image)
 
 add_subdirectory(core)
 add_subdirectory(sandbox)

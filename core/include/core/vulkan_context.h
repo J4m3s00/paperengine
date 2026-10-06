@@ -46,6 +46,10 @@ public:
   [[nodiscard]] VkDevice device() const { return m_device; }
   [[nodiscard]] VmaAllocator allocator() const { return m_allocator; }
 
+  [[nodiscard]] float maxSamplerAnisotropy() const {
+    return m_maxSamplerAnisotropy;
+  }
+
   [[nodiscard]] VkQueue graphicsQueue() const { return m_graphicsQueue; }
   [[nodiscard]] VkQueue presentQueue() const { return m_presentQueue; }
   [[nodiscard]] std::uint32_t graphicsQueueFamily() const {
@@ -70,5 +74,6 @@ private:
   std::uint32_t m_graphicsFamily = 0;
   std::uint32_t m_presentFamily = 0;
   VmaAllocator m_allocator = nullptr;
+  float m_maxSamplerAnisotropy = 1.0F;
 };
 } // namespace Paper

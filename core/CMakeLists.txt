@@ -22,6 +22,7 @@ add_library(core STATIC
   src/renderer/gpu_resources.cpp
   src/renderer/pipeline.cpp
   src/renderer/shader_reflection.cpp
+  src/assets/image.cpp
   src/scene/scene.cpp
   src/scene/transform_system.cpp
   src/vma_impl.cpp)
@@ -36,6 +37,9 @@ target_compile_definitions(core PRIVATE GLFW_INCLUDE_NONE)
 # VMA is a third-party single header; keep its warnings out of our build.
 get_target_property(VMA_INCLUDE_DIRS GPUOpen::VulkanMemoryAllocator INTERFACE_INCLUDE_DIRECTORIES)
 target_include_directories(core SYSTEM PRIVATE ${VMA_INCLUDE_DIRS})
+
+# stb_image.h is downloaded as a single file into stb_image_SOURCE_DIR.
+target_include_directories(core SYSTEM PRIVATE ${stb_image_SOURCE_DIR})
 
 # Same for SPIRV-Reflect.
 get_target_property(SPIRV_REFLECT_INCLUDE_DIRS spirv-reflect-static INTERFACE_INCLUDE_DIRECTORIES)

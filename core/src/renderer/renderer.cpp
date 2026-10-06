@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +44,8 @@ constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 
 // Material descriptor sets live in one pool: kMaxMaterials * frames in flight.
 constexpr std::uint32_t kMaxMaterials = 1024;
+constexpr std::uint32_t kMaxTextureSlots = 8; // Per shader (set 1 bindings).
+constexpr float kMaxAnisotropy = 4.0F;
 
 // Set 0, binding 0 (see ADR 0004). Matches `FrameData` in mesh.vert.
 struct FrameUniforms {
@@ -72,6 +75,13 @@ struct MeshResource {
   GpuBuffer vertexBuffer;
   GpuBuffer indexBuffer;
   std::uint32_t indexCount = 0;
+};
+
+struct TextureResource {
+  GpuImage image;
+  VkSampler sampler = VK_NULL_HANDLE; // Owned by Renderer::Impl::samplers.
+  std::uint32_t useCount = 0;         // Material slots referencing it.
+  bool isDefault = false;
 };
 
 // Owns the pipeline layout and the set 1 layout of one shader.
@@ -105,12 +115,14 @@ struct ShaderResource {
 };
 
 // CPU copy of the parameter block plus one UBO and descriptor set per frame in
-// flight (ADR 0003). `dirtyFrames` has a bit per frame whose UBO is stale.
+// flight (ADR 0003). `dirtyFrames` has a bit per frame whose UBO / texture
+// descriptors are stale.
 struct MaterialResource {
   ShaderHandle shader;
   RenderState state;
   std::vector<std::uint8_t> block;
   std::array<GpuBuffer, kFramesInFlight> uniforms;
+  std::vector<TextureHandle> textures; // One per shader texture slot.
   std::array<VkDescriptorSet, kFramesInFlight> sets{};
   std::uint32_t dirtyFrames = 0;
   VkDevice device = VK_NULL_HANDLE;
@@ -120,6 +132,7 @@ struct MaterialResource {
   MaterialResource(MaterialResource &&other) noexcept
       : shader(other.shader), state(other.state),
         block(std::move(other.block)), uniforms(std::move(other.uniforms)),
+        textures(std::move(other.textures)),
         sets(other.sets), dirtyFrames(other.dirtyFrames),
         device(other.device), pool(std::exchange(other.pool, VK_NULL_HANDLE)) {}
   MaterialResource(const MaterialResource &) = delete;
@@ -243,6 +256,9 @@ struct Renderer::Impl {
   VkDescriptorPool materialDescriptorPool = VK_NULL_HANDLE;
 
   ResourcePool<MeshResource, MeshHandle> meshes;
+  ResourcePool<TextureResource, TextureHandle> textures;
+  std::map<SamplerSettings, VkSampler> samplers;
+  std::array<TextureHandle, 2> defaultTextures{};
   ResourcePool<ShaderResource, ShaderHandle> shaders;
   ResourcePool<MaterialResource, MaterialHandle> materials;
   std::map<PipelineKey, VkPipeline> pipelines;
@@ -275,6 +291,15 @@ struct Renderer::Impl {
 
   std::expected<MeshHandle, Error> createMesh(const MeshData &data);
   void destroyMesh(MeshHandle handle);
+  std::expected<VkSampler, Error> getSampler(const SamplerSettings &settings);
+  std::expected<void, Error> createDefaultTextures();
+  std::expected<TextureHandle, Error>
+  createTexture(const Image &image, ColorSpace colorSpace,
+                const SamplerSettings &sampler);
+  void destroyTexture(TextureHandle handle);
+  std::expected<void, Error> setMaterialTexture(MaterialHandle handle,
+                                                std::string_view slot,
+                                                TextureHandle texture);
   std::expected<ShaderHandle, Error> createShader(const ShaderSource &source);
   void destroyShader(ShaderHandle handle);
   std::expected<MaterialHandle, Error> createMaterial(ShaderHandle shader,
@@ -303,7 +328,8 @@ struct Renderer::Impl {
     }
   }
 
-  void updateMaterialUniforms(MaterialResource &material) const;
+  // Brings the UBO and texture descriptors of this frame's copy up to date.
+  void updateMaterial(MaterialResource &material, const ShaderResource &shader);
   std::expected<void, Error> render(const Scene &scene, const Camera &camera);
   void record(VkCommandBuffer cmd, const FrameData &frame,
               std::uint32_t imageIndex) const;
@@ -322,6 +348,11 @@ Renderer::Impl::~Impl() {
   materials.clear();
   shaders.clear();
   meshes.clear();
+  textures.clear();
+  for (const auto &[settings, sampler] : samplers) {
+    vkDestroySampler(device, sampler, nullptr);
+  }
+  samplers.clear();
   for (const auto &[key, pipeline] : pipelines) {
     vkDestroyPipeline(device, pipeline, nullptr);
   }
@@ -360,7 +391,10 @@ std::expected<void, Error> Renderer::Impl::init() {
   if (auto depthTarget = createDepth(); !depthTarget) {
     return depthTarget;
   }
-  return createDescriptors();
+  if (auto descriptors = createDescriptors(); !descriptors) {
+    return descriptors;
+  }
+  return createDefaultTextures();
 }
 
 std::expected<void, Error> Renderer::Impl::createDepth() {
@@ -407,14 +441,18 @@ std::expected<void, Error> Renderer::Impl::createDescriptors() {
     return r;
   }
 
-  const VkDescriptorPoolSize materialPoolSize{
-      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxMaterials * kFramesInFlight};
+  const std::array<VkDescriptorPoolSize, 2> materialPoolSizes{{
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxMaterials * kFramesInFlight},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+       kMaxMaterials * kFramesInFlight * kMaxTextureSlots},
+  }};
   VkDescriptorPoolCreateInfo materialPoolInfo{};
   materialPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   materialPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
   materialPoolInfo.maxSets = kMaxMaterials * kFramesInFlight;
-  materialPoolInfo.poolSizeCount = 1;
-  materialPoolInfo.pPoolSizes = &materialPoolSize;
+  materialPoolInfo.poolSizeCount =
+      static_cast<std::uint32_t>(materialPoolSizes.size());
+  materialPoolInfo.pPoolSizes = materialPoolSizes.data();
   if (auto r = vkCheck(vkCreateDescriptorPool(device, &materialPoolInfo,
                                               nullptr, &materialDescriptorPool),
                        kCode, "vkCreateDescriptorPool");
@@ -616,17 +654,31 @@ Renderer::Impl::createShader(const ShaderSource &source) {
 
   const VkDevice device = context->device();
 
-  // Set 1: one uniform buffer if the shader has material parameters, else an
-  // empty layout (it stays unbound).
-  VkDescriptorSetLayoutBinding binding{};
-  binding.binding = 0;
-  binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  binding.descriptorCount = 1;
-  binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  if (shader.layout.textures.size() > kMaxTextureSlots) {
+    return std::unexpected(Error{ErrorCode::Shader,
+                                 "Shader has more than " +
+                                     std::to_string(kMaxTextureSlots) +
+                                     " texture slots"});
+  }
+
+  // Set 1: the uniform block (if any) plus one sampler per texture slot. A
+  // shader without either gets an empty layout and its set stays unbound.
+  std::vector<VkDescriptorSetLayoutBinding> bindings;
+  constexpr VkShaderStageFlags kStages =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  if (shader.layout.blockSize > 0) {
+    bindings.push_back({0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, kStages,
+                        nullptr});
+  }
+  for (const TextureSlotInfo &slot : shader.layout.textures) {
+    bindings.push_back({slot.binding,
+                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, kStages,
+                        nullptr});
+  }
   VkDescriptorSetLayoutCreateInfo setLayoutInfo{};
   setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  setLayoutInfo.bindingCount = shader.layout.blockSize > 0 ? 1 : 0;
-  setLayoutInfo.pBindings = &binding;
+  setLayoutInfo.bindingCount = static_cast<std::uint32_t>(bindings.size());
+  setLayoutInfo.pBindings = bindings.data();
   if (auto r = vkCheck(vkCreateDescriptorSetLayout(device, &setLayoutInfo,
                                                    nullptr,
                                                    &shader.materialSetLayout),
@@ -703,15 +755,44 @@ Renderer::Impl::createMaterial(ShaderHandle shaderHandle,
   material.pool = materialDescriptorPool;
   material.dirtyFrames = (1U << kFramesInFlight) - 1U;
 
-  if (shader->layout.blockSize > 0) {
-    for (std::uint32_t i = 0; i < kFramesInFlight; ++i) {
-      auto uniforms = GpuBuffer::create(*context, shader->layout.blockSize,
-                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
-      if (!uniforms) {
-        return std::unexpected(uniforms.error());
+  // Unassigned texture slots point at a default texture.
+  for (const TextureSlotInfo &slot : shader->layout.textures) {
+    std::string lower = slot.name;
+    std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    const DefaultTexture which = lower.find("normal") != std::string::npos
+                                     ? DefaultTexture::FlatNormal
+                                     : DefaultTexture::White;
+    const TextureHandle texture = defaultTextures[static_cast<std::size_t>(which)];
+    ++textures.get(texture)->useCount;
+    material.textures.push_back(texture);
+  }
+  // Undo the use counts if creation fails below.
+  const auto releaseTextures = [&] {
+    for (const TextureHandle texture : material.textures) {
+      if (TextureResource *resource = textures.get(texture)) {
+        --resource->useCount;
       }
-      material.uniforms[i] = std::move(*uniforms);
-      std::memset(material.uniforms[i].mapped(), 0, shader->layout.blockSize);
+    }
+  };
+
+  const bool hasSet = shader->layout.blockSize > 0 ||
+                      !shader->layout.textures.empty();
+  if (hasSet) {
+    for (std::uint32_t i = 0; i < kFramesInFlight; ++i) {
+      if (shader->layout.blockSize > 0) {
+        auto uniforms = GpuBuffer::create(
+            *context, shader->layout.blockSize,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
+        if (!uniforms) {
+          releaseTextures();
+          return std::unexpected(uniforms.error());
+        }
+        material.uniforms[i] = std::move(*uniforms);
+        std::memset(material.uniforms[i].mapped(), 0,
+                    shader->layout.blockSize);
+      }
 
       VkDescriptorSetAllocateInfo allocInfo{};
       allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -722,19 +803,23 @@ Renderer::Impl::createMaterial(ShaderHandle shaderHandle,
               vkAllocateDescriptorSets(device, &allocInfo, &material.sets[i]),
               kCode, "vkAllocateDescriptorSets (too many materials?)");
           !r) {
+        releaseTextures();
         return std::unexpected(r.error());
       }
 
-      const VkDescriptorBufferInfo bufferInfo{material.uniforms[i].handle(), 0,
-                                              shader->layout.blockSize};
-      VkWriteDescriptorSet write{};
-      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      write.dstSet = material.sets[i];
-      write.dstBinding = 0;
-      write.descriptorCount = 1;
-      write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-      write.pBufferInfo = &bufferInfo;
-      vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+      if (shader->layout.blockSize > 0) {
+        // Static; the texture descriptors are written in updateMaterial().
+        const VkDescriptorBufferInfo bufferInfo{material.uniforms[i].handle(), 0,
+                                                shader->layout.blockSize};
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = material.sets[i];
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &bufferInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+      }
     }
   }
 
@@ -750,6 +835,11 @@ void Renderer::Impl::destroyMaterial(MaterialHandle handle) {
   }
   if (ShaderResource *shader = shaders.get(material->shader)) {
     --shader->materialCount;
+  }
+  for (const TextureHandle texture : material->textures) {
+    if (TextureResource *resource = textures.get(texture)) {
+      --resource->useCount;
+    }
   }
   retire(std::make_shared<MaterialResource>(std::move(*material)));
 }
@@ -813,6 +903,157 @@ Renderer::Impl::setMaterialParam(MaterialHandle handle, std::string_view name,
   return result;
 }
 
+std::expected<VkSampler, Error>
+Renderer::Impl::getSampler(const SamplerSettings &settings) {
+  if (const auto it = samplers.find(settings); it != samplers.end()) {
+    return it->second;
+  }
+  const auto toFilter = [](Filter filter) {
+    return filter == Filter::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+  };
+  const auto toWrap = [](WrapMode mode) {
+    switch (mode) {
+    case WrapMode::Repeat:
+      return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    case WrapMode::MirroredRepeat:
+      return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    case WrapMode::ClampToEdge:
+      return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    }
+    return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  };
+
+  VkSamplerCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  info.magFilter = toFilter(settings.magFilter);
+  info.minFilter = toFilter(settings.minFilter);
+  info.mipmapMode = settings.minFilter == Filter::Linear
+                        ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                        : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  info.addressModeU = toWrap(settings.wrapU);
+  info.addressModeV = toWrap(settings.wrapV);
+  info.addressModeW = toWrap(settings.wrapU);
+  info.anisotropyEnable = VK_TRUE;
+  info.maxAnisotropy = std::min(kMaxAnisotropy, context->maxSamplerAnisotropy());
+  info.maxLod = VK_LOD_CLAMP_NONE;
+
+  VkSampler sampler = VK_NULL_HANDLE;
+  if (auto r = vkCheck(vkCreateSampler(context->device(), &info, nullptr, &sampler),
+                       kCode, "vkCreateSampler");
+      !r) {
+    return std::unexpected(r.error());
+  }
+  samplers.emplace(settings, sampler);
+  return sampler;
+}
+
+std::expected<TextureHandle, Error>
+Renderer::Impl::createTexture(const Image &image, ColorSpace colorSpace,
+                              const SamplerSettings &settings) {
+  if (image.width == 0 || image.height == 0 ||
+      image.pixels.size() !=
+          static_cast<std::size_t>(image.width) * image.height * 4) {
+    return std::unexpected(
+        Error{ErrorCode::InvalidArgument,
+              "createTexture: image must be non-empty tightly packed RGBA8"});
+  }
+  auto sampler = getSampler(settings);
+  if (!sampler) {
+    return std::unexpected(sampler.error());
+  }
+  const VkFormat format = colorSpace == ColorSpace::Srgb
+                              ? VK_FORMAT_R8G8B8A8_SRGB
+                              : VK_FORMAT_R8G8B8A8_UNORM;
+  auto uploaded = uploadTexture(*context, image.pixels.data(), image.width,
+                                image.height, format);
+  if (!uploaded) {
+    return std::unexpected(uploaded.error());
+  }
+  TextureResource texture;
+  texture.image = std::move(*uploaded);
+  texture.sampler = *sampler;
+  return textures.create(std::move(texture));
+}
+
+std::expected<void, Error> Renderer::Impl::createDefaultTextures() {
+  struct Spec {
+    DefaultTexture which;
+    std::array<std::uint8_t, 4> rgba;
+    ColorSpace colorSpace;
+  };
+  const std::array<Spec, 2> specs{{
+      {DefaultTexture::White, {255, 255, 255, 255}, ColorSpace::Srgb},
+      // (0.5, 0.5, 1.0): the tangent-space normal pointing straight out.
+      {DefaultTexture::FlatNormal, {128, 128, 255, 255}, ColorSpace::Linear},
+  }};
+  for (const Spec &spec : specs) {
+    Image image{1, 1, {spec.rgba.begin(), spec.rgba.end()}};
+    auto texture = createTexture(image, spec.colorSpace, {});
+    if (!texture) {
+      return std::unexpected(texture.error());
+    }
+    textures.get(*texture)->isDefault = true;
+    defaultTextures[static_cast<std::size_t>(spec.which)] = *texture;
+  }
+  return {};
+}
+
+void Renderer::Impl::destroyTexture(TextureHandle handle) {
+  TextureResource *texture = textures.get(handle);
+  assert(texture != nullptr && "destroyTexture: stale or invalid handle");
+  if (texture == nullptr) {
+    return;
+  }
+  assert(!texture->isDefault && "destroyTexture: default textures are fixed");
+  assert(texture->useCount == 0 &&
+         "destroyTexture: texture is still used by a material");
+  if (texture->isDefault || texture->useCount > 0) {
+    spdlog::error("destroyTexture: texture is {}",
+                  texture->isDefault ? "a default texture"
+                                     : "still used by a material");
+    return;
+  }
+  auto taken = textures.destroy(handle);
+  retire(std::make_shared<TextureResource>(std::move(*taken)));
+}
+
+std::expected<void, Error>
+Renderer::Impl::setMaterialTexture(MaterialHandle handle, std::string_view slot,
+                                   TextureHandle texture) {
+  MaterialResource *material = materials.get(handle);
+  if (material == nullptr) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                 "setMaterialTexture: invalid material handle"});
+  }
+  TextureResource *newTexture = textures.get(texture);
+  if (newTexture == nullptr) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                 "setMaterialTexture: invalid texture handle"});
+  }
+  const ShaderResource *shader = shaders.get(material->shader);
+  assert(shader != nullptr);
+  const int index = shader->layout.findTexture(slot);
+  if (index < 0) {
+    std::string known;
+    for (const TextureSlotInfo &s : shader->layout.textures) {
+      known += (known.empty() ? "" : ", ") + s.name;
+    }
+    return std::unexpected(Error{
+        ErrorCode::InvalidArgument,
+        "Unknown texture slot '" + std::string(slot) + "' (shader slots: " +
+            (known.empty() ? "none" : known) + ")"});
+  }
+
+  TextureHandle &current = material->textures[static_cast<std::size_t>(index)];
+  if (TextureResource *old = textures.get(current)) {
+    --old->useCount;
+  }
+  ++newTexture->useCount;
+  current = texture;
+  material->dirtyFrames = (1U << kFramesInFlight) - 1U;
+  return {};
+}
+
 std::expected<VkPipeline, Error>
 Renderer::Impl::getPipeline(ShaderHandle handle, const ShaderResource &shader,
                             const RenderState &state) {
@@ -833,15 +1074,38 @@ Renderer::Impl::getPipeline(ShaderHandle handle, const ShaderResource &shader,
   return *pipeline;
 }
 
-void Renderer::Impl::updateMaterialUniforms(MaterialResource &material) const {
-  if (material.block.empty() ||
-      (material.dirtyFrames & (1U << frameIndex)) == 0) {
+void Renderer::Impl::updateMaterial(MaterialResource &material,
+                                    const ShaderResource &shader) {
+  const std::uint32_t bit = 1U << frameIndex;
+  if ((material.dirtyFrames & bit) == 0) {
     return;
   }
-  GpuBuffer &uniforms = material.uniforms[frameIndex];
-  std::memcpy(uniforms.mapped(), material.block.data(), material.block.size());
-  uniforms.flush();
-  material.dirtyFrames &= ~(1U << frameIndex);
+  if (!material.block.empty()) {
+    GpuBuffer &uniforms = material.uniforms[frameIndex];
+    std::memcpy(uniforms.mapped(), material.block.data(), material.block.size());
+    uniforms.flush();
+  }
+  if (!material.textures.empty()) {
+    const std::size_t count = material.textures.size();
+    std::vector<VkDescriptorImageInfo> imageInfos(count);
+    std::vector<VkWriteDescriptorSet> writes(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      const TextureResource *texture = textures.get(material.textures[i]);
+      assert(texture != nullptr);
+      imageInfos[i] = {texture->sampler, texture->image.view(),
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = material.sets[frameIndex];
+      writes[i].dstBinding = shader.layout.textures[i].binding;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[i].pImageInfo = &imageInfos[i];
+    }
+    vkUpdateDescriptorSets(context->device(),
+                           static_cast<std::uint32_t>(writes.size()),
+                           writes.data(), 0, nullptr);
+  }
+  material.dirtyFrames &= ~bit;
 }
 
 void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
@@ -924,7 +1188,7 @@ void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
       boundMaterial = nullptr;
     }
     if (draw.material != boundMaterial) {
-      if (!draw.material->block.empty()) {
+      if (draw.material->sets[frameIndex] != VK_NULL_HANDLE) {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 draw.pipelineLayout, 1, 1,
                                 &draw.material->sets[frameIndex], 0, nullptr);
@@ -1023,7 +1287,7 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
     if (!pipeline) {
       return std::unexpected(pipeline.error());
     }
-    updateMaterialUniforms(*material);
+    updateMaterial(*material, *shader);
     drawList.push_back({mesh,
                         material,
                         *pipeline,
@@ -1156,6 +1420,47 @@ Renderer::createMaterial(ShaderHandle shader, const RenderState &state) {
 
 void Renderer::destroyMaterial(MaterialHandle material) {
   m_pImpl->destroyMaterial(material);
+}
+
+std::expected<TextureHandle, Error>
+Renderer::createTexture(const Image &image, ColorSpace colorSpace,
+                        const SamplerSettings &sampler) {
+  return m_pImpl->createTexture(image, colorSpace, sampler);
+}
+
+std::expected<TextureHandle, Error>
+Renderer::loadTexture(const std::filesystem::path &path, ColorSpace colorSpace,
+                      const SamplerSettings &sampler) {
+  auto image = loadImage(path);
+  if (!image) {
+    return std::unexpected(image.error());
+  }
+  return m_pImpl->createTexture(*image, colorSpace, sampler);
+}
+
+TextureHandle Renderer::loadTextureOrDefault(
+    const std::filesystem::path &path, ColorSpace colorSpace,
+    DefaultTexture fallback, const SamplerSettings &sampler) {
+  auto texture = loadTexture(path, colorSpace, sampler);
+  if (!texture) {
+    spdlog::warn("Using the default texture instead of '{}': {}", path.string(),
+                 texture.error().message);
+    return defaultTexture(fallback);
+  }
+  return *texture;
+}
+
+TextureHandle Renderer::defaultTexture(DefaultTexture which) const {
+  return m_pImpl->defaultTextures[static_cast<std::size_t>(which)];
+}
+
+void Renderer::destroyTexture(TextureHandle texture) {
+  m_pImpl->destroyTexture(texture);
+}
+
+std::expected<void, Error> Renderer::setMaterialTexture(
+    MaterialHandle material, std::string_view slot, TextureHandle texture) {
+  return m_pImpl->setMaterialTexture(material, slot, texture);
 }
 
 std::expected<void, Error>
