@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Paper Engine: an early-stage C++23 Vulkan 1.3 engine (CMake project `myengine`). Two targets: `core` (static library, namespace `Paper`) and `sandbox` (executable that drives `core`). Not a git repo; no tests or linter configured yet.
+Paper Engine: an early-stage C++23 Vulkan 1.3 engine (CMake project `myengine`). Two targets: `core` (static library, namespace `Paper`) and `sandbox` (executable that drives `core`). Private GitHub repo (`J4m3s00/paperengine`); no tests or linter configured yet.
 
 ## Commands
 
@@ -32,3 +32,13 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 ## Conventions
 
 Compiler flags `-Wall -Wextra -Wpedantic` apply to `core` only. Code style: 2-space indent, `m_` member prefix, `[[nodiscard]]` getters, deleted copy/move on RAII Vulkan wrappers (clang-format LLVM-like style).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`J4m3s00/paperengine`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
