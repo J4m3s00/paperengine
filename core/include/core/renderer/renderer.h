@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/error.h"
+#include "core/renderer/camera.h"
+#include "core/renderer/mesh.h"
 #include "core/vulkan_context.h"
 
 #include <glm/glm.hpp>
@@ -10,6 +12,7 @@
 #include <memory>
 
 namespace Paper {
+class Scene;
 class Window;
 
 struct RendererConfig {
@@ -34,9 +37,18 @@ public:
   Renderer(Renderer &&) = delete;
   Renderer &operator=(Renderer &&) = delete;
 
-  // Renders and presents one frame. Handles resize and minimise internally;
-  // while the window is minimised this is a no-op.
-  [[nodiscard]] std::expected<void, Error> render();
+  // Uploads a mesh to the GPU (synchronously) and returns a handle to it.
+  [[nodiscard]] std::expected<MeshHandle, Error>
+  createMesh(const MeshData &data);
+  // Frees the mesh; the handle becomes invalid. Waits for the GPU to go idle
+  // (a deferred deletion queue arrives with the material system).
+  void destroyMesh(MeshHandle mesh);
+
+  // Renders and presents one frame of `scene` seen through `camera`. Run
+  // TransformSystem::update(scene) first. Handles resize and minimise
+  // internally; while the window is minimised this is a no-op.
+  [[nodiscard]] std::expected<void, Error> render(const Scene &scene,
+                                                  const Camera &camera);
 
 private:
   struct Impl;

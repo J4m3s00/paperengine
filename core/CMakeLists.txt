@@ -17,10 +17,15 @@ add_library(core STATIC
   src/swapchain.cpp
   src/renderer/renderer.cpp
   src/renderer/shader.cpp
+  src/renderer/camera.cpp
+  src/renderer/mesh.cpp
+  src/renderer/gpu_resources.cpp
+  src/scene/scene.cpp
+  src/scene/transform_system.cpp
   src/vma_impl.cpp)
 target_include_directories(core PUBLIC include PRIVATE src)
 target_link_libraries(core
-  PUBLIC  glfw glm::glm spdlog::spdlog Vulkan::Vulkan
+  PUBLIC  glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
   PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator)
 target_compile_options(core PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(core PRIVATE GLFW_INCLUDE_NONE)
@@ -31,8 +36,8 @@ target_include_directories(core SYSTEM PRIVATE ${VMA_INCLUDE_DIRS})
 
 # Compile GLSL shaders to SPIR-V in <build>/shaders at build time.
 set(PAPER_SHADER_SOURCES
-  shaders/triangle.vert
-  shaders/triangle.frag)
+  shaders/mesh.vert
+  shaders/mesh.frag)
 set(PAPER_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 set(PAPER_SHADER_OUTPUTS)
 foreach(shader IN LISTS PAPER_SHADER_SOURCES)

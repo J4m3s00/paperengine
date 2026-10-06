@@ -1,0 +1,91 @@
+#pragma once
+
+#include "core/error.h"
+
+#include <vulkan/vulkan.h>
+
+#include <expected>
+
+struct VmaAllocator_T;
+typedef VmaAllocator_T *VmaAllocator;
+struct VmaAllocation_T;
+typedef VmaAllocation_T *VmaAllocation;
+
+namespace Paper {
+class VulkanContext;
+
+// RAII VMA buffer. Internal value type (movable); the VulkanContext that
+// created it must outlive it.
+class GpuBuffer {
+public:
+  GpuBuffer() = default;
+  ~GpuBuffer();
+
+  GpuBuffer(const GpuBuffer &) = delete;
+  GpuBuffer &operator=(const GpuBuffer &) = delete;
+  GpuBuffer(GpuBuffer &&other) noexcept;
+  GpuBuffer &operator=(GpuBuffer &&other) noexcept;
+
+  // hostVisible: persistently mapped, sequential CPU writes (staging, UBOs).
+  // Otherwise device-local memory.
+  [[nodiscard]] static std::expected<GpuBuffer, Error>
+  create(const VulkanContext &context, VkDeviceSize size,
+         VkBufferUsageFlags usage, bool hostVisible);
+
+  [[nodiscard]] VkBuffer handle() const { return m_buffer; }
+  [[nodiscard]] VkDeviceSize size() const { return m_size; }
+  // Null unless created hostVisible.
+  [[nodiscard]] void *mapped() const { return m_mapped; }
+
+  // Flushes CPU writes to a mapped buffer (needed on non-coherent memory).
+  void flush() const;
+
+private:
+  void destroy();
+
+  VmaAllocator m_allocator = nullptr;
+  VkBuffer m_buffer = VK_NULL_HANDLE;
+  VmaAllocation m_allocation = nullptr;
+  VkDeviceSize m_size = 0;
+  void *m_mapped = nullptr;
+};
+
+// RAII VMA 2D image with one view.
+class GpuImage {
+public:
+  GpuImage() = default;
+  ~GpuImage();
+
+  GpuImage(const GpuImage &) = delete;
+  GpuImage &operator=(const GpuImage &) = delete;
+  GpuImage(GpuImage &&other) noexcept;
+  GpuImage &operator=(GpuImage &&other) noexcept;
+
+  [[nodiscard]] static std::expected<GpuImage, Error>
+  create(const VulkanContext &context, VkExtent2D extent, VkFormat format,
+         VkImageUsageFlags usage, VkImageAspectFlags aspect);
+
+  [[nodiscard]] VkImage image() const { return m_image; }
+  [[nodiscard]] VkImageView view() const { return m_view; }
+  [[nodiscard]] VkFormat format() const { return m_format; }
+  [[nodiscard]] VkExtent2D extent() const { return m_extent; }
+
+private:
+  void destroy();
+
+  VmaAllocator m_allocator = nullptr;
+  VkDevice m_device = VK_NULL_HANDLE;
+  VkImage m_image = VK_NULL_HANDLE;
+  VmaAllocation m_allocation = nullptr;
+  VkImageView m_view = VK_NULL_HANDLE;
+  VkFormat m_format = VK_FORMAT_UNDEFINED;
+  VkExtent2D m_extent{};
+};
+
+// Synchronous upload: copies `data` into a new device-local buffer through a
+// staging buffer on the graphics queue and waits for completion. `usage` must
+// not include TRANSFER_DST (added here).
+[[nodiscard]] std::expected<GpuBuffer, Error>
+uploadBuffer(const VulkanContext &context, const void *data, VkDeviceSize size,
+             VkBufferUsageFlags usage);
+} // namespace Paper

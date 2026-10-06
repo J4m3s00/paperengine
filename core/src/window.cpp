@@ -107,6 +107,8 @@ int Window::framebufferHeight() const {
 
 GLFWwindow *Window::nativeHandle() const { return m_pImpl->handle; }
 
+double Window::time() const { return glfwGetTime(); }
+
 void Window::resize(int newWidth, int newHeight) {
   glfwSetWindowSize(m_pImpl->handle, newWidth, newHeight);
 }

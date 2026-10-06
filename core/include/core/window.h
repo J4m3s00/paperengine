@@ -34,6 +34,8 @@ public:
   [[nodiscard]] int framebufferWidth() const;
   [[nodiscard]] int framebufferHeight() const;
   [[nodiscard]] GLFWwindow *nativeHandle() const;
+  // Seconds since GLFW was initialised.
+  [[nodiscard]] double time() const;
 
   void resize(int newWidth, int newHeight);
   void update();

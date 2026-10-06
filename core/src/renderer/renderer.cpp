@@ -1,13 +1,20 @@
 #include "core/renderer/renderer.h"
 
 #include "core/renderer/shader.h"
+#include "core/scene/scene.h"
 #include "core/swapchain.h"
 #include "core/vulkan_context.h"
 #include "core/window.h"
 
+#include "gpu_resources.h"
 #include "vk_check.h"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <array>
+#include <cassert>
+#include <cstddef>
+#include <cstring>
 #include <cstdint>
 #include <filesystem>
 #include <utility>
@@ -23,11 +30,43 @@ namespace {
 constexpr std::uint32_t kFramesInFlight = 2;
 constexpr ErrorCode kCode = ErrorCode::Vulkan;
 
+constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
+
+// Set 0, binding 0 (see ADR 0004). Matches `FrameData` in mesh.vert.
+struct FrameUniforms {
+  glm::mat4 view;
+  glm::mat4 proj;
+  glm::mat4 viewProj;
+  glm::vec4 cameraPosition;
+};
+
+// Per-object push constants. Matches `Push` in mesh.vert.
+struct PushConstants {
+  glm::mat4 model;
+  glm::mat4 normalMatrix;
+};
+static_assert(sizeof(PushConstants) == 128);
+
 struct FrameData {
   VkCommandPool commandPool = VK_NULL_HANDLE;
   VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
   VkSemaphore imageAvailable = VK_NULL_HANDLE;
   VkFence inFlight = VK_NULL_HANDLE;
+  GpuBuffer uniforms;
+  VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+};
+
+struct MeshResource {
+  GpuBuffer vertexBuffer;
+  GpuBuffer indexBuffer;
+  std::uint32_t indexCount = 0;
+  std::uint32_t generation = 0;
+  bool alive = false;
+};
+
+struct DrawItem {
+  const MeshResource *mesh;
+  PushConstants push;
 };
 
 std::filesystem::path executableDir() {
@@ -63,7 +102,8 @@ VkShaderStageFlagBits toVk(ShaderStage stage) {
   return VK_SHADER_STAGE_VERTEX_BIT;
 }
 
-void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageLayout from,
+void transitionImage(VkCommandBuffer cmd, VkImage image,
+                     VkImageAspectFlags aspect, VkImageLayout from,
                      VkImageLayout to, VkPipelineStageFlags2 srcStage,
                      VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage,
                      VkAccessFlags2 dstAccess) {
@@ -78,7 +118,7 @@ void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageLayout from,
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = image;
-  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  barrier.subresourceRange = {aspect, 0, 1, 0, 1};
 
   VkDependencyInfo dependency{};
   dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -98,9 +138,15 @@ struct Renderer::Impl {
   // the frame that signalled it has finished.
   std::vector<VkSemaphore> renderFinished;
   std::uint32_t frameIndex = 0;
-  // Temporary until meshes and materials exist (see issue "Mesh with camera").
-  VkPipelineLayout trianglePipelineLayout = VK_NULL_HANDLE;
-  VkPipeline trianglePipeline = VK_NULL_HANDLE;
+  GpuImage depth;
+  VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+  // Temporary single pipeline until materials exist (issue "Material system").
+  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  std::vector<MeshResource> meshes;
+  std::vector<std::uint32_t> freeMeshSlots;
+  std::vector<DrawItem> drawList;
 
   Impl(const Window &w, RendererConfig c) : window(w), config(std::move(c)) {}
   ~Impl();
@@ -113,12 +159,18 @@ struct Renderer::Impl {
   std::expected<void, Error> init();
   std::expected<void, Error> createFrameResources();
   std::expected<void, Error> createRenderFinishedSemaphores();
-  std::expected<void, Error> createTrianglePipeline();
+  std::expected<void, Error> createDepth();
+  std::expected<void, Error> createDescriptors();
+  std::expected<void, Error> createPipeline();
+  std::expected<MeshHandle, Error> createMesh(const MeshData &data);
+  void destroyMesh(MeshHandle handle);
+  MeshResource *findMesh(MeshHandle handle);
   void destroyRenderFinishedSemaphores();
   // Returns false while the window is minimised.
   std::expected<bool, Error> recreateSwapchain();
-  std::expected<void, Error> render();
-  void record(VkCommandBuffer cmd, std::uint32_t imageIndex) const;
+  std::expected<void, Error> render(const Scene &scene, const Camera &camera);
+  void record(VkCommandBuffer cmd, const FrameData &frame,
+              std::uint32_t imageIndex) const;
 };
 
 Renderer::Impl::~Impl() {
@@ -127,8 +179,10 @@ Renderer::Impl::~Impl() {
   }
   const VkDevice device = context->device();
   vkDeviceWaitIdle(device);
-  vkDestroyPipeline(device, trianglePipeline, nullptr);
-  vkDestroyPipelineLayout(device, trianglePipelineLayout, nullptr);
+  vkDestroyPipeline(device, pipeline, nullptr);
+  vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+  vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+  vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
   destroyRenderFinishedSemaphores();
   for (FrameData &frame : frames) {
     vkDestroyFence(device, frame.inFlight, nullptr);
@@ -156,18 +210,105 @@ std::expected<void, Error> Renderer::Impl::init() {
   if (auto semaphores = createRenderFinishedSemaphores(); !semaphores) {
     return semaphores;
   }
-  return createTrianglePipeline();
+  if (auto depthTarget = createDepth(); !depthTarget) {
+    return depthTarget;
+  }
+  if (auto descriptors = createDescriptors(); !descriptors) {
+    return descriptors;
+  }
+  return createPipeline();
 }
 
-std::expected<void, Error> Renderer::Impl::createTrianglePipeline() {
+std::expected<void, Error> Renderer::Impl::createDepth() {
+  auto created = GpuImage::create(
+      *context, swapchain->extent(), kDepthFormat,
+      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+  if (!created) {
+    return std::unexpected(created.error());
+  }
+  depth = std::move(*created);
+  return {};
+}
+
+std::expected<void, Error> Renderer::Impl::createDescriptors() {
+  const VkDevice device = context->device();
+
+  VkDescriptorSetLayoutBinding binding{};
+  binding.binding = 0;
+  binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  binding.descriptorCount = 1;
+  binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo layoutInfo{};
+  layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layoutInfo.bindingCount = 1;
+  layoutInfo.pBindings = &binding;
+  if (auto r = vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+                                                   &descriptorSetLayout),
+                       kCode, "vkCreateDescriptorSetLayout");
+      !r) {
+    return r;
+  }
+
+  const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      kFramesInFlight};
+  VkDescriptorPoolCreateInfo poolInfo{};
+  poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolInfo.maxSets = kFramesInFlight;
+  poolInfo.poolSizeCount = 1;
+  poolInfo.pPoolSizes = &poolSize;
+  if (auto r = vkCheck(
+          vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool),
+          kCode, "vkCreateDescriptorPool");
+      !r) {
+    return r;
+  }
+
+  std::array<VkDescriptorSetLayout, kFramesInFlight> layouts{};
+  layouts.fill(descriptorSetLayout);
+  std::array<VkDescriptorSet, kFramesInFlight> sets{};
+  VkDescriptorSetAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool = descriptorPool;
+  allocInfo.descriptorSetCount = kFramesInFlight;
+  allocInfo.pSetLayouts = layouts.data();
+  if (auto r = vkCheck(vkAllocateDescriptorSets(device, &allocInfo, sets.data()),
+                       kCode, "vkAllocateDescriptorSets");
+      !r) {
+    return r;
+  }
+
+  for (std::uint32_t i = 0; i < kFramesInFlight; ++i) {
+    auto uniforms = GpuBuffer::create(*context, sizeof(FrameUniforms),
+                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
+    if (!uniforms) {
+      return std::unexpected(uniforms.error());
+    }
+    frames[i].uniforms = std::move(*uniforms);
+    frames[i].descriptorSet = sets[i];
+
+    const VkDescriptorBufferInfo bufferInfo{frames[i].uniforms.handle(), 0,
+                                            sizeof(FrameUniforms)};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = sets[i];
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo = &bufferInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+  }
+  return {};
+}
+
+std::expected<void, Error> Renderer::Impl::createPipeline() {
   const std::filesystem::path shaderDir =
       resolveAssetRoot(config.assetRoot) / "shaders";
-  auto vertex = Shader::load(*context, shaderDir / "triangle.vert.spv",
+  auto vertex = Shader::load(*context, shaderDir / "mesh.vert.spv",
                              ShaderStage::Vertex);
   if (!vertex) {
     return std::unexpected(vertex.error());
   }
-  auto fragment = Shader::load(*context, shaderDir / "triangle.frag.spv",
+  auto fragment = Shader::load(*context, shaderDir / "mesh.frag.spv",
                                ShaderStage::Fragment);
   if (!fragment) {
     return std::unexpected(fragment.error());
@@ -182,17 +323,36 @@ std::expected<void, Error> Renderer::Impl::createTrianglePipeline() {
     stages[i].pName = "main";
   }
 
+  const VkPushConstantRange pushRange{VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                      sizeof(PushConstants)};
   VkPipelineLayoutCreateInfo layoutInfo{};
   layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutInfo.setLayoutCount = 1;
+  layoutInfo.pSetLayouts = &descriptorSetLayout;
+  layoutInfo.pushConstantRangeCount = 1;
+  layoutInfo.pPushConstantRanges = &pushRange;
   if (auto r = vkCheck(vkCreatePipelineLayout(context->device(), &layoutInfo,
-                                              nullptr, &trianglePipelineLayout),
+                                              nullptr, &pipelineLayout),
                        kCode, "vkCreatePipelineLayout");
       !r) {
     return r;
   }
 
+  const VkVertexInputBindingDescription vertexBinding{
+      0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+  const std::array<VkVertexInputAttributeDescription, 4> vertexAttributes{{
+      {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
+      {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
+      {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
+      {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
+  }};
   VkPipelineVertexInputStateCreateInfo vertexInput{};
   vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertexInput.vertexBindingDescriptionCount = 1;
+  vertexInput.pVertexBindingDescriptions = &vertexBinding;
+  vertexInput.vertexAttributeDescriptionCount =
+      static_cast<std::uint32_t>(vertexAttributes.size());
+  vertexInput.pVertexAttributeDescriptions = vertexAttributes.data();
 
   VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
   inputAssembly.sType =
@@ -213,6 +373,13 @@ std::expected<void, Error> Renderer::Impl::createTrianglePipeline() {
   rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
   rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   rasterization.lineWidth = 1.0F;
+
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.depthTestEnable = VK_TRUE;
+  depthStencil.depthWriteEnable = VK_TRUE;
+  depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+  depthStencil.maxDepthBounds = 1.0F;
 
   VkPipelineMultisampleStateCreateInfo multisample{};
   multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -240,6 +407,7 @@ std::expected<void, Error> Renderer::Impl::createTrianglePipeline() {
   rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
   rendering.colorAttachmentCount = 1;
   rendering.pColorAttachmentFormats = &colorFormat;
+  rendering.depthAttachmentFormat = kDepthFormat;
 
   VkGraphicsPipelineCreateInfo pipelineInfo{};
   pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -251,12 +419,13 @@ std::expected<void, Error> Renderer::Impl::createTrianglePipeline() {
   pipelineInfo.pViewportState = &viewportState;
   pipelineInfo.pRasterizationState = &rasterization;
   pipelineInfo.pMultisampleState = &multisample;
+  pipelineInfo.pDepthStencilState = &depthStencil;
   pipelineInfo.pColorBlendState = &colorBlend;
   pipelineInfo.pDynamicState = &dynamicState;
-  pipelineInfo.layout = trianglePipelineLayout;
+  pipelineInfo.layout = pipelineLayout;
   return vkCheck(vkCreateGraphicsPipelines(context->device(), VK_NULL_HANDLE, 1,
                                            &pipelineInfo, nullptr,
-                                           &trianglePipeline),
+                                           &pipeline),
                  kCode, "vkCreateGraphicsPipelines");
 }
 
@@ -339,10 +508,13 @@ std::expected<bool, Error> Renderer::Impl::recreateSwapchain() {
   if (auto r = createRenderFinishedSemaphores(); !r) {
     return std::unexpected(r.error());
   }
+  if (auto r = createDepth(); !r) {
+    return std::unexpected(r.error());
+  }
   return true;
 }
 
-void Renderer::Impl::record(VkCommandBuffer cmd,
+void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
                             std::uint32_t imageIndex) const {
   const VkImage image = swapchain->images()[imageIndex];
 
@@ -351,11 +523,23 @@ void Renderer::Impl::record(VkCommandBuffer cmd,
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cmd, &beginInfo);
 
-  transitionImage(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
+  transitionImage(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT,
+                  VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+  // The depth image is shared by all frames in flight; this barrier orders
+  // this frame's depth use after the previous frame's.
+  constexpr VkPipelineStageFlags2 kDepthStages =
+      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+      VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  transitionImage(cmd, depth.image(), VK_IMAGE_ASPECT_DEPTH_BIT,
+                  VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, kDepthStages,
+                  VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, kDepthStages,
+                  VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
 
   VkRenderingAttachmentInfo colorAttachment{};
   colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -367,12 +551,21 @@ void Renderer::Impl::record(VkCommandBuffer cmd,
                                        config.clearColor.b,
                                        config.clearColor.a}};
 
+  VkRenderingAttachmentInfo depthAttachment{};
+  depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+  depthAttachment.imageView = depth.view();
+  depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depthAttachment.clearValue.depthStencil = {1.0F, 0};
+
   VkRenderingInfo renderingInfo{};
   renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
   renderingInfo.renderArea = {{0, 0}, swapchain->extent()};
   renderingInfo.layerCount = 1;
   renderingInfo.colorAttachmentCount = 1;
   renderingInfo.pColorAttachments = &colorAttachment;
+  renderingInfo.pDepthAttachment = &depthAttachment;
 
   vkCmdBeginRendering(cmd, &renderingInfo);
 
@@ -387,12 +580,25 @@ void Renderer::Impl::record(VkCommandBuffer cmd,
   const VkRect2D scissor{{0, 0}, extent};
   vkCmdSetViewport(cmd, 0, 1, &viewport);
   vkCmdSetScissor(cmd, 0, 1, &scissor);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
-  vkCmdDraw(cmd, 3, 1, 0, 0);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                          0, 1, &frame.descriptorSet, 0, nullptr);
+
+  for (const DrawItem &draw : drawList) {
+    const VkBuffer vertexBuffer = draw.mesh->vertexBuffer.handle();
+    const VkDeviceSize offset = 0;
+    vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                       sizeof(PushConstants), &draw.push);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
+    vkCmdBindIndexBuffer(cmd, draw.mesh->indexBuffer.handle(), 0,
+                         VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, draw.mesh->indexCount, 1, 0, 0, 0);
+  }
 
   vkCmdEndRendering(cmd);
 
-  transitionImage(cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  transitionImage(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -401,7 +607,74 @@ void Renderer::Impl::record(VkCommandBuffer cmd,
   vkEndCommandBuffer(cmd);
 }
 
-std::expected<void, Error> Renderer::Impl::render() {
+MeshResource *Renderer::Impl::findMesh(MeshHandle handle) {
+  if (!handle.valid() || handle.index >= meshes.size()) {
+    return nullptr;
+  }
+  MeshResource &mesh = meshes[handle.index];
+  return mesh.alive && mesh.generation == handle.generation ? &mesh : nullptr;
+}
+
+std::expected<MeshHandle, Error>
+Renderer::Impl::createMesh(const MeshData &data) {
+  if (data.vertices.empty() || data.indices.empty()) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                 "createMesh: mesh has no vertices or indices"});
+  }
+  for (const std::uint32_t index : data.indices) {
+    if (index >= data.vertices.size()) {
+      return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                   "createMesh: index out of range"});
+    }
+  }
+
+  auto vertexBuffer = uploadBuffer(
+      *context, data.vertices.data(), data.vertices.size() * sizeof(Vertex),
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  if (!vertexBuffer) {
+    return std::unexpected(vertexBuffer.error());
+  }
+  auto indexBuffer = uploadBuffer(
+      *context, data.indices.data(),
+      data.indices.size() * sizeof(std::uint32_t),
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  if (!indexBuffer) {
+    return std::unexpected(indexBuffer.error());
+  }
+
+  std::uint32_t slot = 0;
+  if (!freeMeshSlots.empty()) {
+    slot = freeMeshSlots.back();
+    freeMeshSlots.pop_back();
+  } else {
+    slot = static_cast<std::uint32_t>(meshes.size());
+    meshes.emplace_back();
+  }
+  MeshResource &mesh = meshes[slot];
+  mesh.vertexBuffer = std::move(*vertexBuffer);
+  mesh.indexBuffer = std::move(*indexBuffer);
+  mesh.indexCount = static_cast<std::uint32_t>(data.indices.size());
+  mesh.alive = true;
+  return MeshHandle{slot, mesh.generation};
+}
+
+void Renderer::Impl::destroyMesh(MeshHandle handle) {
+  MeshResource *mesh = findMesh(handle);
+  assert(mesh != nullptr && "destroyMesh: stale or invalid handle");
+  if (mesh == nullptr) {
+    return;
+  }
+  vkDeviceWaitIdle(context->device());
+  mesh->vertexBuffer = GpuBuffer();
+  mesh->indexBuffer = GpuBuffer();
+  mesh->indexCount = 0;
+  mesh->alive = false;
+  ++mesh->generation;
+  freeMeshSlots.push_back(handle.index);
+}
+
+std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
+                                                   const Camera &camera) {
   const int framebufferWidth = window.framebufferWidth();
   const int framebufferHeight = window.framebufferHeight();
   if (framebufferWidth == 0 || framebufferHeight == 0) {
@@ -456,7 +729,36 @@ std::expected<void, Error> Renderer::Impl::render() {
     return r;
   }
 
-  record(frame.commandBuffer, imageIndex);
+  // The fence guarantees the GPU is done with this frame's uniform buffer.
+  const VkExtent2D currentExtent = swapchain->extent();
+  FrameUniforms uniforms{};
+  uniforms.view = camera.view();
+  uniforms.proj = glm::perspectiveRH_ZO(
+      camera.fovY,
+      static_cast<float>(currentExtent.width) /
+          static_cast<float>(currentExtent.height),
+      camera.nearPlane, camera.farPlane);
+  uniforms.viewProj = uniforms.proj * uniforms.view;
+  uniforms.cameraPosition = glm::vec4(camera.position, 1.0F);
+  std::memcpy(frame.uniforms.mapped(), &uniforms, sizeof(uniforms));
+  frame.uniforms.flush();
+
+  drawList.clear();
+  for (const auto [entity, world, renderer] :
+       scene.registry()
+           .view<const WorldTransform, const MeshRenderer>()
+           .each()) {
+    (void)entity;
+    const MeshResource *mesh = findMesh(renderer.mesh);
+    assert(mesh != nullptr && "MeshRenderer references a stale mesh handle");
+    if (mesh == nullptr) {
+      continue;
+    }
+    drawList.push_back(
+        {mesh, {world.matrix, glm::transpose(glm::inverse(world.matrix))}});
+  }
+
+  record(frame.commandBuffer, frame, imageIndex);
 
   VkSemaphoreSubmitInfo waitInfo{};
   waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -528,5 +830,14 @@ Renderer::create(const Window &window, const RendererConfig &config) {
   return std::unique_ptr<Renderer>(new Renderer(std::move(impl)));
 }
 
-std::expected<void, Error> Renderer::render() { return m_pImpl->render(); }
+std::expected<MeshHandle, Error> Renderer::createMesh(const MeshData &data) {
+  return m_pImpl->createMesh(data);
+}
+
+void Renderer::destroyMesh(MeshHandle mesh) { m_pImpl->destroyMesh(mesh); }
+
+std::expected<void, Error> Renderer::render(const Scene &scene,
+                                            const Camera &camera) {
+  return m_pImpl->render(scene, camera);
+}
 } // namespace Paper

@@ -9,6 +9,7 @@ enum class ErrorCode {
   Swapchain,
   Io,
   Shader,
+  InvalidArgument,
 };
 
 struct Error {
