@@ -27,7 +27,14 @@ FetchContent_Declare(entt
   GIT_REPOSITORY https://github.com/skypjack/entt.git
   GIT_TAG        v3.15.0)
 
-FetchContent_MakeAvailable(glfw glm spdlog entt)
+FetchContent_Declare(spirv-reflect
+  GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Reflect.git
+  GIT_TAG        vulkan-sdk-1.4.363.0)
+set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "" FORCE)
+set(SPIRV_REFLECT_STATIC_LIB ON CACHE BOOL "" FORCE)
+set(SPIRV_REFLECT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(glfw glm spdlog entt spirv-reflect)
 
 add_subdirectory(core)
 add_subdirectory(sandbox)

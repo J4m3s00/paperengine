@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/error.h"
+#include "core/handle.h"
 
 #include <vulkan/vulkan.h>
 
@@ -17,6 +18,16 @@ enum class ShaderStage {
   Vertex,
   Fragment,
 };
+
+// SPIR-V files of a graphics shader. Relative paths are resolved against
+// `<assetRoot>/shaders`.
+struct ShaderSource {
+  std::filesystem::path vertex;
+  std::filesystem::path fragment;
+};
+
+struct ShaderTag;
+using ShaderHandle = Handle<ShaderTag>;
 
 // A SPIR-V shader module loaded from a `.spv` file produced by glslc.
 // Borrows the VulkanContext, which must outlive the Shader.

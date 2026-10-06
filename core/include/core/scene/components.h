@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/renderer/material.h"
 #include "core/renderer/mesh.h"
 
 #include <entt/entity/entity.hpp>
@@ -35,5 +36,6 @@ struct WorldTransform {
 
 struct MeshRenderer {
   MeshHandle mesh;
+  MaterialHandle material;
 };
 } // namespace Paper

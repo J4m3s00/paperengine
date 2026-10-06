@@ -20,19 +20,26 @@ add_library(core STATIC
   src/renderer/camera.cpp
   src/renderer/mesh.cpp
   src/renderer/gpu_resources.cpp
+  src/renderer/pipeline.cpp
+  src/renderer/shader_reflection.cpp
   src/scene/scene.cpp
   src/scene/transform_system.cpp
   src/vma_impl.cpp)
 target_include_directories(core PUBLIC include PRIVATE src)
 target_link_libraries(core
   PUBLIC  glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
-  PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator)
+  PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
+          spirv-reflect-static)
 target_compile_options(core PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(core PRIVATE GLFW_INCLUDE_NONE)
 
 # VMA is a third-party single header; keep its warnings out of our build.
 get_target_property(VMA_INCLUDE_DIRS GPUOpen::VulkanMemoryAllocator INTERFACE_INCLUDE_DIRECTORIES)
 target_include_directories(core SYSTEM PRIVATE ${VMA_INCLUDE_DIRS})
+
+# Same for SPIRV-Reflect.
+get_target_property(SPIRV_REFLECT_INCLUDE_DIRS spirv-reflect-static INTERFACE_INCLUDE_DIRECTORIES)
+target_include_directories(core SYSTEM PRIVATE ${SPIRV_REFLECT_INCLUDE_DIRS})
 
 # Compile GLSL shaders to SPIR-V in <build>/shaders at build time.
 set(PAPER_SHADER_SOURCES

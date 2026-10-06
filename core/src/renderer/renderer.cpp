@@ -7,16 +7,25 @@
 #include "core/window.h"
 
 #include "gpu_resources.h"
+#include "pipeline.h"
+#include "resource_pool.h"
+#include "shader_reflection.h"
 #include "vk_check.h"
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
-#include <cstring>
 #include <cstdint>
+#include <cstring>
+#include <deque>
 #include <filesystem>
+#include <functional>
+#include <map>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -31,6 +40,9 @@ constexpr std::uint32_t kFramesInFlight = 2;
 constexpr ErrorCode kCode = ErrorCode::Vulkan;
 
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
+
+// Material descriptor sets live in one pool: kMaxMaterials * frames in flight.
+constexpr std::uint32_t kMaxMaterials = 1024;
 
 // Set 0, binding 0 (see ADR 0004). Matches `FrameData` in mesh.vert.
 struct FrameUniforms {
@@ -60,13 +72,101 @@ struct MeshResource {
   GpuBuffer vertexBuffer;
   GpuBuffer indexBuffer;
   std::uint32_t indexCount = 0;
-  std::uint32_t generation = 0;
-  bool alive = false;
+};
+
+// Owns the pipeline layout and the set 1 layout of one shader.
+struct ShaderResource {
+  std::unique_ptr<Shader> vertex;
+  std::unique_ptr<Shader> fragment;
+  MaterialLayout layout;
+  VkDevice device = VK_NULL_HANDLE;
+  VkDescriptorSetLayout materialSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+  std::uint32_t materialCount = 0;
+
+  ShaderResource() = default;
+  ShaderResource(ShaderResource &&other) noexcept
+      : vertex(std::move(other.vertex)), fragment(std::move(other.fragment)),
+        layout(std::move(other.layout)),
+        device(std::exchange(other.device, VK_NULL_HANDLE)),
+        materialSetLayout(
+            std::exchange(other.materialSetLayout, VK_NULL_HANDLE)),
+        pipelineLayout(std::exchange(other.pipelineLayout, VK_NULL_HANDLE)),
+        materialCount(other.materialCount) {}
+  ShaderResource(const ShaderResource &) = delete;
+  ShaderResource &operator=(const ShaderResource &) = delete;
+  ShaderResource &operator=(ShaderResource &&) = delete;
+  ~ShaderResource() {
+    if (device != VK_NULL_HANDLE) {
+      vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+      vkDestroyDescriptorSetLayout(device, materialSetLayout, nullptr);
+    }
+  }
+};
+
+// CPU copy of the parameter block plus one UBO and descriptor set per frame in
+// flight (ADR 0003). `dirtyFrames` has a bit per frame whose UBO is stale.
+struct MaterialResource {
+  ShaderHandle shader;
+  RenderState state;
+  std::vector<std::uint8_t> block;
+  std::array<GpuBuffer, kFramesInFlight> uniforms;
+  std::array<VkDescriptorSet, kFramesInFlight> sets{};
+  std::uint32_t dirtyFrames = 0;
+  VkDevice device = VK_NULL_HANDLE;
+  VkDescriptorPool pool = VK_NULL_HANDLE;
+
+  MaterialResource() = default;
+  MaterialResource(MaterialResource &&other) noexcept
+      : shader(other.shader), state(other.state),
+        block(std::move(other.block)), uniforms(std::move(other.uniforms)),
+        sets(other.sets), dirtyFrames(other.dirtyFrames),
+        device(other.device), pool(std::exchange(other.pool, VK_NULL_HANDLE)) {}
+  MaterialResource(const MaterialResource &) = delete;
+  MaterialResource &operator=(const MaterialResource &) = delete;
+  MaterialResource &operator=(MaterialResource &&) = delete;
+  ~MaterialResource() {
+    if (pool != VK_NULL_HANDLE) {
+      for (const VkDescriptorSet set : sets) {
+        if (set != VK_NULL_HANDLE) {
+          vkFreeDescriptorSets(device, pool, 1, &set);
+        }
+      }
+    }
+  }
+};
+
+struct PipelineKey {
+  std::uint32_t shaderIndex;
+  std::uint32_t shaderGeneration;
+  RenderState state;
+  VkFormat colorFormat;
+  VkFormat depthFormat;
+
+  friend auto operator<=>(const PipelineKey &, const PipelineKey &) = default;
 };
 
 struct DrawItem {
   const MeshResource *mesh;
+  const MaterialResource *material;
+  VkPipeline pipeline;
+  VkPipelineLayout pipelineLayout;
   PushConstants push;
+};
+
+// Runs a callback when destroyed; used for raw Vulkan objects in the deletion
+// queue.
+struct Deleter {
+  std::function<void()> destroy;
+
+  Deleter() = default;
+  Deleter(const Deleter &) = delete;
+  Deleter &operator=(const Deleter &) = delete;
+  ~Deleter() {
+    if (destroy) {
+      destroy();
+    }
+  }
 };
 
 std::filesystem::path executableDir() {
@@ -90,16 +190,6 @@ std::filesystem::path resolveAssetRoot(const std::filesystem::path &configured) 
     return exeDir;
   }
   return PAPER_DEFAULT_ASSET_ROOT;
-}
-
-VkShaderStageFlagBits toVk(ShaderStage stage) {
-  switch (stage) {
-  case ShaderStage::Vertex:
-    return VK_SHADER_STAGE_VERTEX_BIT;
-  case ShaderStage::Fragment:
-    return VK_SHADER_STAGE_FRAGMENT_BIT;
-  }
-  return VK_SHADER_STAGE_VERTEX_BIT;
 }
 
 void transitionImage(VkCommandBuffer cmd, VkImage image,
@@ -126,11 +216,16 @@ void transitionImage(VkCommandBuffer cmd, VkImage image,
   dependency.pImageMemoryBarriers = &barrier;
   vkCmdPipelineBarrier2(cmd, &dependency);
 }
+
+std::uintptr_t sortKey(const void *pointer) {
+  return reinterpret_cast<std::uintptr_t>(pointer);
+}
 } // namespace
 
 struct Renderer::Impl {
   const Window &window;
   RendererConfig config;
+  std::filesystem::path assetRoot;
   std::unique_ptr<VulkanContext> context;
   std::unique_ptr<Swapchain> swapchain;
   std::array<FrameData, kFramesInFlight> frames{};
@@ -138,17 +233,30 @@ struct Renderer::Impl {
   // the frame that signalled it has finished.
   std::vector<VkSemaphore> renderFinished;
   std::uint32_t frameIndex = 0;
+  // Number of frames submitted so far; drives the deletion queue.
+  std::uint64_t frameNumber = 0;
   GpuImage depth;
-  VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-  VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-  // Temporary single pipeline until materials exist (issue "Material system").
-  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-  VkPipeline pipeline = VK_NULL_HANDLE;
-  std::vector<MeshResource> meshes;
-  std::vector<std::uint32_t> freeMeshSlots;
+  // Set 0 (per frame).
+  VkDescriptorSetLayout frameSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool frameDescriptorPool = VK_NULL_HANDLE;
+  // Set 1 (per material).
+  VkDescriptorPool materialDescriptorPool = VK_NULL_HANDLE;
+
+  ResourcePool<MeshResource, MeshHandle> meshes;
+  ResourcePool<ShaderResource, ShaderHandle> shaders;
+  ResourcePool<MaterialResource, MaterialHandle> materials;
+  std::map<PipelineKey, VkPipeline> pipelines;
+
+  struct Pending {
+    std::uint64_t retireFrame;
+    std::shared_ptr<void> holder;
+  };
+  std::deque<Pending> pending;
   std::vector<DrawItem> drawList;
 
-  Impl(const Window &w, RendererConfig c) : window(w), config(std::move(c)) {}
+  Impl(const Window &w, RendererConfig c)
+      : window(w), config(std::move(c)),
+        assetRoot(resolveAssetRoot(config.assetRoot)) {}
   ~Impl();
 
   Impl(const Impl &) = delete;
@@ -159,15 +267,43 @@ struct Renderer::Impl {
   std::expected<void, Error> init();
   std::expected<void, Error> createFrameResources();
   std::expected<void, Error> createRenderFinishedSemaphores();
+  void destroyRenderFinishedSemaphores();
   std::expected<void, Error> createDepth();
   std::expected<void, Error> createDescriptors();
-  std::expected<void, Error> createPipeline();
-  std::expected<MeshHandle, Error> createMesh(const MeshData &data);
-  void destroyMesh(MeshHandle handle);
-  MeshResource *findMesh(MeshHandle handle);
-  void destroyRenderFinishedSemaphores();
   // Returns false while the window is minimised.
   std::expected<bool, Error> recreateSwapchain();
+
+  std::expected<MeshHandle, Error> createMesh(const MeshData &data);
+  void destroyMesh(MeshHandle handle);
+  std::expected<ShaderHandle, Error> createShader(const ShaderSource &source);
+  void destroyShader(ShaderHandle handle);
+  std::expected<MaterialHandle, Error> createMaterial(ShaderHandle shader,
+                                                      const RenderState &state);
+  void destroyMaterial(MaterialHandle handle);
+  std::expected<void, Error> setMaterialParam(MaterialHandle handle,
+                                              std::string_view name,
+                                              const MaterialParam &value);
+  std::expected<VkPipeline, Error> getPipeline(ShaderHandle handle,
+                                               const ShaderResource &shader,
+                                               const RenderState &state);
+
+  // Deletion queue (ADR 0003): resources freed by the user are destroyed once
+  // the frames that may still use them have completed.
+  void retire(std::shared_ptr<void> holder) {
+    pending.push_back({frameNumber + 1, std::move(holder)});
+  }
+  void retireCall(std::function<void()> destroy) {
+    auto deleter = std::make_shared<Deleter>();
+    deleter->destroy = std::move(destroy);
+    retire(std::move(deleter));
+  }
+  void collectGarbage() {
+    while (!pending.empty() && pending.front().retireFrame <= frameNumber) {
+      pending.pop_front();
+    }
+  }
+
+  void updateMaterialUniforms(MaterialResource &material) const;
   std::expected<void, Error> render(const Scene &scene, const Camera &camera);
   void record(VkCommandBuffer cmd, const FrameData &frame,
               std::uint32_t imageIndex) const;
@@ -179,10 +315,21 @@ Renderer::Impl::~Impl() {
   }
   const VkDevice device = context->device();
   vkDeviceWaitIdle(device);
-  vkDestroyPipeline(device, pipeline, nullptr);
-  vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-  vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-  vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+
+  // Order matters: resources that free descriptor sets / layouts must go
+  // before the pools and the device-level objects below.
+  pending.clear();
+  materials.clear();
+  shaders.clear();
+  meshes.clear();
+  for (const auto &[key, pipeline] : pipelines) {
+    vkDestroyPipeline(device, pipeline, nullptr);
+  }
+  pipelines.clear();
+
+  vkDestroyDescriptorPool(device, materialDescriptorPool, nullptr);
+  vkDestroyDescriptorPool(device, frameDescriptorPool, nullptr);
+  vkDestroyDescriptorSetLayout(device, frameSetLayout, nullptr);
   destroyRenderFinishedSemaphores();
   for (FrameData &frame : frames) {
     vkDestroyFence(device, frame.inFlight, nullptr);
@@ -213,10 +360,7 @@ std::expected<void, Error> Renderer::Impl::init() {
   if (auto depthTarget = createDepth(); !depthTarget) {
     return depthTarget;
   }
-  if (auto descriptors = createDescriptors(); !descriptors) {
-    return descriptors;
-  }
-  return createPipeline();
+  return createDescriptors();
 }
 
 std::expected<void, Error> Renderer::Impl::createDepth() {
@@ -243,32 +387,47 @@ std::expected<void, Error> Renderer::Impl::createDescriptors() {
   layoutInfo.bindingCount = 1;
   layoutInfo.pBindings = &binding;
   if (auto r = vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
-                                                   &descriptorSetLayout),
+                                                   &frameSetLayout),
                        kCode, "vkCreateDescriptorSetLayout");
       !r) {
     return r;
   }
 
-  const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                      kFramesInFlight};
+  const VkDescriptorPoolSize framePoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                           kFramesInFlight};
   VkDescriptorPoolCreateInfo poolInfo{};
   poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   poolInfo.maxSets = kFramesInFlight;
   poolInfo.poolSizeCount = 1;
-  poolInfo.pPoolSizes = &poolSize;
-  if (auto r = vkCheck(
-          vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool),
-          kCode, "vkCreateDescriptorPool");
+  poolInfo.pPoolSizes = &framePoolSize;
+  if (auto r = vkCheck(vkCreateDescriptorPool(device, &poolInfo, nullptr,
+                                              &frameDescriptorPool),
+                       kCode, "vkCreateDescriptorPool");
+      !r) {
+    return r;
+  }
+
+  const VkDescriptorPoolSize materialPoolSize{
+      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxMaterials * kFramesInFlight};
+  VkDescriptorPoolCreateInfo materialPoolInfo{};
+  materialPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  materialPoolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  materialPoolInfo.maxSets = kMaxMaterials * kFramesInFlight;
+  materialPoolInfo.poolSizeCount = 1;
+  materialPoolInfo.pPoolSizes = &materialPoolSize;
+  if (auto r = vkCheck(vkCreateDescriptorPool(device, &materialPoolInfo,
+                                              nullptr, &materialDescriptorPool),
+                       kCode, "vkCreateDescriptorPool");
       !r) {
     return r;
   }
 
   std::array<VkDescriptorSetLayout, kFramesInFlight> layouts{};
-  layouts.fill(descriptorSetLayout);
+  layouts.fill(frameSetLayout);
   std::array<VkDescriptorSet, kFramesInFlight> sets{};
   VkDescriptorSetAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = descriptorPool;
+  allocInfo.descriptorPool = frameDescriptorPool;
   allocInfo.descriptorSetCount = kFramesInFlight;
   allocInfo.pSetLayouts = layouts.data();
   if (auto r = vkCheck(vkAllocateDescriptorSets(device, &allocInfo, sets.data()),
@@ -298,135 +457,6 @@ std::expected<void, Error> Renderer::Impl::createDescriptors() {
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
   }
   return {};
-}
-
-std::expected<void, Error> Renderer::Impl::createPipeline() {
-  const std::filesystem::path shaderDir =
-      resolveAssetRoot(config.assetRoot) / "shaders";
-  auto vertex = Shader::load(*context, shaderDir / "mesh.vert.spv",
-                             ShaderStage::Vertex);
-  if (!vertex) {
-    return std::unexpected(vertex.error());
-  }
-  auto fragment = Shader::load(*context, shaderDir / "mesh.frag.spv",
-                               ShaderStage::Fragment);
-  if (!fragment) {
-    return std::unexpected(fragment.error());
-  }
-
-  std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
-  const std::array<const Shader *, 2> shaders{vertex->get(), fragment->get()};
-  for (std::size_t i = 0; i < stages.size(); ++i) {
-    stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[i].stage = toVk(shaders[i]->stage());
-    stages[i].module = shaders[i]->module();
-    stages[i].pName = "main";
-  }
-
-  const VkPushConstantRange pushRange{VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                      sizeof(PushConstants)};
-  VkPipelineLayoutCreateInfo layoutInfo{};
-  layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  layoutInfo.setLayoutCount = 1;
-  layoutInfo.pSetLayouts = &descriptorSetLayout;
-  layoutInfo.pushConstantRangeCount = 1;
-  layoutInfo.pPushConstantRanges = &pushRange;
-  if (auto r = vkCheck(vkCreatePipelineLayout(context->device(), &layoutInfo,
-                                              nullptr, &pipelineLayout),
-                       kCode, "vkCreatePipelineLayout");
-      !r) {
-    return r;
-  }
-
-  const VkVertexInputBindingDescription vertexBinding{
-      0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-  const std::array<VkVertexInputAttributeDescription, 4> vertexAttributes{{
-      {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
-      {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
-      {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
-      {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
-  }};
-  VkPipelineVertexInputStateCreateInfo vertexInput{};
-  vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-  vertexInput.vertexBindingDescriptionCount = 1;
-  vertexInput.pVertexBindingDescriptions = &vertexBinding;
-  vertexInput.vertexAttributeDescriptionCount =
-      static_cast<std::uint32_t>(vertexAttributes.size());
-  vertexInput.pVertexAttributeDescriptions = vertexAttributes.data();
-
-  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-  inputAssembly.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-  VkPipelineViewportStateCreateInfo viewportState{};
-  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-  viewportState.viewportCount = 1;
-  viewportState.scissorCount = 1;
-
-  // Right-handed, Y up: the negative-height viewport flips Y, so
-  // counter-clockwise triangles are front faces (see CONTEXT.md).
-  VkPipelineRasterizationStateCreateInfo rasterization{};
-  rasterization.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-  rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-  rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
-  rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  rasterization.lineWidth = 1.0F;
-
-  VkPipelineDepthStencilStateCreateInfo depthStencil{};
-  depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-  depthStencil.depthTestEnable = VK_TRUE;
-  depthStencil.depthWriteEnable = VK_TRUE;
-  depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-  depthStencil.maxDepthBounds = 1.0F;
-
-  VkPipelineMultisampleStateCreateInfo multisample{};
-  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-  VkPipelineColorBlendAttachmentState blendAttachment{};
-  blendAttachment.colorWriteMask =
-      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-  VkPipelineColorBlendStateCreateInfo colorBlend{};
-  colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-  colorBlend.attachmentCount = 1;
-  colorBlend.pAttachments = &blendAttachment;
-
-  const std::array<VkDynamicState, 2> dynamicStates{VK_DYNAMIC_STATE_VIEWPORT,
-                                                    VK_DYNAMIC_STATE_SCISSOR};
-  VkPipelineDynamicStateCreateInfo dynamicState{};
-  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-  dynamicState.dynamicStateCount =
-      static_cast<std::uint32_t>(dynamicStates.size());
-  dynamicState.pDynamicStates = dynamicStates.data();
-
-  const VkFormat colorFormat = swapchain->format();
-  VkPipelineRenderingCreateInfo rendering{};
-  rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-  rendering.colorAttachmentCount = 1;
-  rendering.pColorAttachmentFormats = &colorFormat;
-  rendering.depthAttachmentFormat = kDepthFormat;
-
-  VkGraphicsPipelineCreateInfo pipelineInfo{};
-  pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  pipelineInfo.pNext = &rendering;
-  pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
-  pipelineInfo.pStages = stages.data();
-  pipelineInfo.pVertexInputState = &vertexInput;
-  pipelineInfo.pInputAssemblyState = &inputAssembly;
-  pipelineInfo.pViewportState = &viewportState;
-  pipelineInfo.pRasterizationState = &rasterization;
-  pipelineInfo.pMultisampleState = &multisample;
-  pipelineInfo.pDepthStencilState = &depthStencil;
-  pipelineInfo.pColorBlendState = &colorBlend;
-  pipelineInfo.pDynamicState = &dynamicState;
-  pipelineInfo.layout = pipelineLayout;
-  return vkCheck(vkCreateGraphicsPipelines(context->device(), VK_NULL_HANDLE, 1,
-                                           &pipelineInfo, nullptr,
-                                           &pipeline),
-                 kCode, "vkCreateGraphicsPipelines");
 }
 
 std::expected<void, Error> Renderer::Impl::createFrameResources() {
@@ -514,6 +544,306 @@ std::expected<bool, Error> Renderer::Impl::recreateSwapchain() {
   return true;
 }
 
+std::expected<MeshHandle, Error>
+Renderer::Impl::createMesh(const MeshData &data) {
+  if (data.vertices.empty() || data.indices.empty()) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                 "createMesh: mesh has no vertices or indices"});
+  }
+  for (const std::uint32_t index : data.indices) {
+    if (index >= data.vertices.size()) {
+      return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                   "createMesh: index out of range"});
+    }
+  }
+
+  auto vertexBuffer = uploadBuffer(
+      *context, data.vertices.data(), data.vertices.size() * sizeof(Vertex),
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  if (!vertexBuffer) {
+    return std::unexpected(vertexBuffer.error());
+  }
+  auto indexBuffer = uploadBuffer(
+      *context, data.indices.data(),
+      data.indices.size() * sizeof(std::uint32_t),
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  if (!indexBuffer) {
+    return std::unexpected(indexBuffer.error());
+  }
+
+  MeshResource mesh;
+  mesh.vertexBuffer = std::move(*vertexBuffer);
+  mesh.indexBuffer = std::move(*indexBuffer);
+  mesh.indexCount = static_cast<std::uint32_t>(data.indices.size());
+  return meshes.create(std::move(mesh));
+}
+
+void Renderer::Impl::destroyMesh(MeshHandle handle) {
+  auto mesh = meshes.destroy(handle);
+  assert(mesh.has_value() && "destroyMesh: stale or invalid handle");
+  if (mesh) {
+    retire(std::make_shared<MeshResource>(std::move(*mesh)));
+  }
+}
+
+std::expected<ShaderHandle, Error>
+Renderer::Impl::createShader(const ShaderSource &source) {
+  const std::filesystem::path shaderDir = assetRoot / "shaders";
+  const auto resolve = [&](const std::filesystem::path &path) {
+    return path.is_absolute() ? path : shaderDir / path;
+  };
+
+  ShaderResource shader;
+  auto vertex = Shader::load(*context, resolve(source.vertex),
+                             ShaderStage::Vertex);
+  if (!vertex) {
+    return std::unexpected(vertex.error());
+  }
+  shader.vertex = std::move(*vertex);
+  auto fragment = Shader::load(*context, resolve(source.fragment),
+                               ShaderStage::Fragment);
+  if (!fragment) {
+    return std::unexpected(fragment.error());
+  }
+  shader.fragment = std::move(*fragment);
+
+  auto layout = reflectMaterialLayout(shader.vertex->spirv(),
+                                      shader.fragment->spirv());
+  if (!layout) {
+    return std::unexpected(layout.error());
+  }
+  shader.layout = std::move(*layout);
+
+  const VkDevice device = context->device();
+
+  // Set 1: one uniform buffer if the shader has material parameters, else an
+  // empty layout (it stays unbound).
+  VkDescriptorSetLayoutBinding binding{};
+  binding.binding = 0;
+  binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  binding.descriptorCount = 1;
+  binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo setLayoutInfo{};
+  setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  setLayoutInfo.bindingCount = shader.layout.blockSize > 0 ? 1 : 0;
+  setLayoutInfo.pBindings = &binding;
+  if (auto r = vkCheck(vkCreateDescriptorSetLayout(device, &setLayoutInfo,
+                                                   nullptr,
+                                                   &shader.materialSetLayout),
+                       kCode, "vkCreateDescriptorSetLayout");
+      !r) {
+    return std::unexpected(r.error());
+  }
+  shader.device = device; // From here on the resource cleans up after itself.
+
+  const std::array<VkDescriptorSetLayout, 2> setLayouts{frameSetLayout,
+                                                        shader.materialSetLayout};
+  const VkPushConstantRange pushRange{VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                      sizeof(PushConstants)};
+  VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+  pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pipelineLayoutInfo.setLayoutCount =
+      static_cast<std::uint32_t>(setLayouts.size());
+  pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+  pipelineLayoutInfo.pushConstantRangeCount = 1;
+  pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+  if (auto r = vkCheck(vkCreatePipelineLayout(device, &pipelineLayoutInfo,
+                                              nullptr, &shader.pipelineLayout),
+                       kCode, "vkCreatePipelineLayout");
+      !r) {
+    return std::unexpected(r.error());
+  }
+  return shaders.create(std::move(shader));
+}
+
+void Renderer::Impl::destroyShader(ShaderHandle handle) {
+  ShaderResource *shader = shaders.get(handle);
+  assert(shader != nullptr && "destroyShader: stale or invalid handle");
+  if (shader == nullptr) {
+    return;
+  }
+  assert(shader->materialCount == 0 &&
+         "destroyShader: shader is still used by a material");
+  if (shader->materialCount > 0) {
+    spdlog::error("destroyShader: {} material(s) still use this shader",
+                  shader->materialCount);
+    return;
+  }
+
+  for (auto it = pipelines.begin(); it != pipelines.end();) {
+    if (it->first.shaderIndex == handle.index &&
+        it->first.shaderGeneration == handle.generation) {
+      const VkDevice device = context->device();
+      const VkPipeline pipeline = it->second;
+      retireCall([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+      it = pipelines.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  auto taken = shaders.destroy(handle);
+  retire(std::make_shared<ShaderResource>(std::move(*taken)));
+}
+
+std::expected<MaterialHandle, Error>
+Renderer::Impl::createMaterial(ShaderHandle shaderHandle,
+                               const RenderState &state) {
+  ShaderResource *shader = shaders.get(shaderHandle);
+  if (shader == nullptr) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                 "createMaterial: invalid shader handle"});
+  }
+
+  const VkDevice device = context->device();
+  MaterialResource material;
+  material.shader = shaderHandle;
+  material.state = state;
+  material.block.assign(shader->layout.blockSize, 0);
+  material.device = device;
+  material.pool = materialDescriptorPool;
+  material.dirtyFrames = (1U << kFramesInFlight) - 1U;
+
+  if (shader->layout.blockSize > 0) {
+    for (std::uint32_t i = 0; i < kFramesInFlight; ++i) {
+      auto uniforms = GpuBuffer::create(*context, shader->layout.blockSize,
+                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
+      if (!uniforms) {
+        return std::unexpected(uniforms.error());
+      }
+      material.uniforms[i] = std::move(*uniforms);
+      std::memset(material.uniforms[i].mapped(), 0, shader->layout.blockSize);
+
+      VkDescriptorSetAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+      allocInfo.descriptorPool = materialDescriptorPool;
+      allocInfo.descriptorSetCount = 1;
+      allocInfo.pSetLayouts = &shader->materialSetLayout;
+      if (auto r = vkCheck(
+              vkAllocateDescriptorSets(device, &allocInfo, &material.sets[i]),
+              kCode, "vkAllocateDescriptorSets (too many materials?)");
+          !r) {
+        return std::unexpected(r.error());
+      }
+
+      const VkDescriptorBufferInfo bufferInfo{material.uniforms[i].handle(), 0,
+                                              shader->layout.blockSize};
+      VkWriteDescriptorSet write{};
+      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet = material.sets[i];
+      write.dstBinding = 0;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      write.pBufferInfo = &bufferInfo;
+      vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
+  }
+
+  ++shader->materialCount;
+  return materials.create(std::move(material));
+}
+
+void Renderer::Impl::destroyMaterial(MaterialHandle handle) {
+  auto material = materials.destroy(handle);
+  assert(material.has_value() && "destroyMaterial: stale or invalid handle");
+  if (!material) {
+    return;
+  }
+  if (ShaderResource *shader = shaders.get(material->shader)) {
+    --shader->materialCount;
+  }
+  retire(std::make_shared<MaterialResource>(std::move(*material)));
+}
+
+std::expected<void, Error>
+Renderer::Impl::setMaterialParam(MaterialHandle handle, std::string_view name,
+                                 const MaterialParam &value) {
+  MaterialResource *material = materials.get(handle);
+  if (material == nullptr) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                 "setMaterialParam: invalid material handle"});
+  }
+  const ShaderResource *shader = shaders.get(material->shader);
+  assert(shader != nullptr);
+  const ParamInfo *param = shader->layout.find(name);
+  if (param == nullptr) {
+    std::string known;
+    for (const ParamInfo &p : shader->layout.params) {
+      known += (known.empty() ? "" : ", ") + p.name;
+    }
+    return std::unexpected(Error{
+        ErrorCode::InvalidArgument,
+        "Unknown material parameter '" + std::string(name) +
+            "' (shader parameters: " + (known.empty() ? "none" : known) + ")"});
+  }
+
+  const auto write = [&](ParamType expected, const void *data) {
+    if (param->type != expected) {
+      return std::expected<void, Error>(std::unexpected(Error{
+          ErrorCode::InvalidArgument,
+          "Material parameter '" + std::string(name) + "' is a " +
+              paramTypeName(param->type) + ", got a " +
+              paramTypeName(expected)}));
+    }
+    std::memcpy(material->block.data() + param->offset, data,
+                paramSize(expected));
+    return std::expected<void, Error>();
+  };
+
+  const auto result = std::visit(
+      [&](const auto &v) -> std::expected<void, Error> {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, float>) {
+          return write(ParamType::Float, &v);
+        } else if constexpr (std::is_same_v<T, int>) {
+          return write(ParamType::Int, &v);
+        } else if constexpr (std::is_same_v<T, glm::vec2>) {
+          return write(ParamType::Vec2, &v);
+        } else if constexpr (std::is_same_v<T, glm::vec3>) {
+          return write(ParamType::Vec3, &v);
+        } else if constexpr (std::is_same_v<T, glm::vec4>) {
+          return write(ParamType::Vec4, &v);
+        } else {
+          return write(ParamType::Mat4, &v);
+        }
+      },
+      value);
+  if (result) {
+    material->dirtyFrames = (1U << kFramesInFlight) - 1U;
+  }
+  return result;
+}
+
+std::expected<VkPipeline, Error>
+Renderer::Impl::getPipeline(ShaderHandle handle, const ShaderResource &shader,
+                            const RenderState &state) {
+  const PipelineKey key{handle.index, handle.generation, state,
+                        swapchain->format(), kDepthFormat};
+  if (const auto it = pipelines.find(key); it != pipelines.end()) {
+    return it->second;
+  }
+  auto pipeline = createGraphicsPipeline({context->device(),
+                                          shader.pipelineLayout,
+                                          shader.vertex->module(),
+                                          shader.fragment->module(), state,
+                                          key.colorFormat, key.depthFormat});
+  if (!pipeline) {
+    return std::unexpected(pipeline.error());
+  }
+  pipelines.emplace(key, *pipeline);
+  return *pipeline;
+}
+
+void Renderer::Impl::updateMaterialUniforms(MaterialResource &material) const {
+  if (material.block.empty() ||
+      (material.dirtyFrames & (1U << frameIndex)) == 0) {
+    return;
+  }
+  GpuBuffer &uniforms = material.uniforms[frameIndex];
+  std::memcpy(uniforms.mapped(), material.block.data(), material.block.size());
+  uniforms.flush();
+  material.dirtyFrames &= ~(1U << frameIndex);
+}
+
 void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
                             std::uint32_t imageIndex) const {
   const VkImage image = swapchain->images()[imageIndex];
@@ -580,14 +910,31 @@ void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
   const VkRect2D scissor{{0, 0}, extent};
   vkCmdSetViewport(cmd, 0, 1, &viewport);
   vkCmdSetScissor(cmd, 0, 1, &scissor);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-                          0, 1, &frame.descriptorSet, 0, nullptr);
 
+  // drawList is sorted by (pipeline, material) to minimise state changes.
+  VkPipeline boundPipeline = VK_NULL_HANDLE;
+  const MaterialResource *boundMaterial = nullptr;
   for (const DrawItem &draw : drawList) {
+    if (draw.pipeline != boundPipeline) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              draw.pipelineLayout, 0, 1, &frame.descriptorSet, 0,
+                              nullptr);
+      boundPipeline = draw.pipeline;
+      boundMaterial = nullptr;
+    }
+    if (draw.material != boundMaterial) {
+      if (!draw.material->block.empty()) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                draw.pipelineLayout, 1, 1,
+                                &draw.material->sets[frameIndex], 0, nullptr);
+      }
+      boundMaterial = draw.material;
+    }
+
     const VkBuffer vertexBuffer = draw.mesh->vertexBuffer.handle();
     const VkDeviceSize offset = 0;
-    vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+    vkCmdPushConstants(cmd, draw.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                        sizeof(PushConstants), &draw.push);
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
     vkCmdBindIndexBuffer(cmd, draw.mesh->indexBuffer.handle(), 0,
@@ -605,72 +952,6 @@ void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
                   VK_PIPELINE_STAGE_2_NONE, 0);
 
   vkEndCommandBuffer(cmd);
-}
-
-MeshResource *Renderer::Impl::findMesh(MeshHandle handle) {
-  if (!handle.valid() || handle.index >= meshes.size()) {
-    return nullptr;
-  }
-  MeshResource &mesh = meshes[handle.index];
-  return mesh.alive && mesh.generation == handle.generation ? &mesh : nullptr;
-}
-
-std::expected<MeshHandle, Error>
-Renderer::Impl::createMesh(const MeshData &data) {
-  if (data.vertices.empty() || data.indices.empty()) {
-    return std::unexpected(Error{ErrorCode::InvalidArgument,
-                                 "createMesh: mesh has no vertices or indices"});
-  }
-  for (const std::uint32_t index : data.indices) {
-    if (index >= data.vertices.size()) {
-      return std::unexpected(Error{ErrorCode::InvalidArgument,
-                                   "createMesh: index out of range"});
-    }
-  }
-
-  auto vertexBuffer = uploadBuffer(
-      *context, data.vertices.data(), data.vertices.size() * sizeof(Vertex),
-      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-  if (!vertexBuffer) {
-    return std::unexpected(vertexBuffer.error());
-  }
-  auto indexBuffer = uploadBuffer(
-      *context, data.indices.data(),
-      data.indices.size() * sizeof(std::uint32_t),
-      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-  if (!indexBuffer) {
-    return std::unexpected(indexBuffer.error());
-  }
-
-  std::uint32_t slot = 0;
-  if (!freeMeshSlots.empty()) {
-    slot = freeMeshSlots.back();
-    freeMeshSlots.pop_back();
-  } else {
-    slot = static_cast<std::uint32_t>(meshes.size());
-    meshes.emplace_back();
-  }
-  MeshResource &mesh = meshes[slot];
-  mesh.vertexBuffer = std::move(*vertexBuffer);
-  mesh.indexBuffer = std::move(*indexBuffer);
-  mesh.indexCount = static_cast<std::uint32_t>(data.indices.size());
-  mesh.alive = true;
-  return MeshHandle{slot, mesh.generation};
-}
-
-void Renderer::Impl::destroyMesh(MeshHandle handle) {
-  MeshResource *mesh = findMesh(handle);
-  assert(mesh != nullptr && "destroyMesh: stale or invalid handle");
-  if (mesh == nullptr) {
-    return;
-  }
-  vkDeviceWaitIdle(context->device());
-  mesh->vertexBuffer = GpuBuffer();
-  mesh->indexBuffer = GpuBuffer();
-  mesh->indexCount = 0;
-  mesh->alive = false;
-  ++mesh->generation;
-  freeMeshSlots.push_back(handle.index);
 }
 
 std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
@@ -702,6 +983,57 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
       !r) {
     return r;
   }
+  // This frame's fence is signalled, so every frame up to frameNumber - 2 has
+  // finished: resources retired for them can go.
+  collectGarbage();
+
+  // The fence guarantees the GPU is done with this frame's uniform buffer.
+  const VkExtent2D currentExtent = swapchain->extent();
+  FrameUniforms uniforms{};
+  uniforms.view = camera.view();
+  uniforms.proj = glm::perspectiveRH_ZO(
+      camera.fovY,
+      static_cast<float>(currentExtent.width) /
+          static_cast<float>(currentExtent.height),
+      camera.nearPlane, camera.farPlane);
+  uniforms.viewProj = uniforms.proj * uniforms.view;
+  uniforms.cameraPosition = glm::vec4(camera.position, 1.0F);
+  std::memcpy(frame.uniforms.mapped(), &uniforms, sizeof(uniforms));
+  frame.uniforms.flush();
+
+  // Built before acquiring an image so a failure (e.g. pipeline creation)
+  // leaves the swapchain untouched.
+  drawList.clear();
+  for (const auto [entity, world, meshRenderer] :
+       scene.registry()
+           .view<const WorldTransform, const MeshRenderer>()
+           .each()) {
+    (void)entity;
+    const MeshResource *mesh = meshes.get(meshRenderer.mesh);
+    MaterialResource *material = materials.get(meshRenderer.material);
+    assert(mesh != nullptr && "MeshRenderer references a stale mesh handle");
+    assert(material != nullptr &&
+           "MeshRenderer references a stale material handle");
+    if (mesh == nullptr || material == nullptr) {
+      continue;
+    }
+    const ShaderResource *shader = shaders.get(material->shader);
+    assert(shader != nullptr);
+    auto pipeline = getPipeline(material->shader, *shader, material->state);
+    if (!pipeline) {
+      return std::unexpected(pipeline.error());
+    }
+    updateMaterialUniforms(*material);
+    drawList.push_back({mesh,
+                        material,
+                        *pipeline,
+                        shader->pipelineLayout,
+                        {world.matrix, glm::transpose(glm::inverse(world.matrix))}});
+  }
+  std::ranges::sort(drawList, [](const DrawItem &a, const DrawItem &b) {
+    return std::pair(sortKey(a.pipeline), sortKey(a.material)) <
+           std::pair(sortKey(b.pipeline), sortKey(b.material));
+  });
 
   std::uint32_t imageIndex = 0;
   const VkResult acquired =
@@ -727,35 +1059,6 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
                        "vkResetCommandPool");
       !r) {
     return r;
-  }
-
-  // The fence guarantees the GPU is done with this frame's uniform buffer.
-  const VkExtent2D currentExtent = swapchain->extent();
-  FrameUniforms uniforms{};
-  uniforms.view = camera.view();
-  uniforms.proj = glm::perspectiveRH_ZO(
-      camera.fovY,
-      static_cast<float>(currentExtent.width) /
-          static_cast<float>(currentExtent.height),
-      camera.nearPlane, camera.farPlane);
-  uniforms.viewProj = uniforms.proj * uniforms.view;
-  uniforms.cameraPosition = glm::vec4(camera.position, 1.0F);
-  std::memcpy(frame.uniforms.mapped(), &uniforms, sizeof(uniforms));
-  frame.uniforms.flush();
-
-  drawList.clear();
-  for (const auto [entity, world, renderer] :
-       scene.registry()
-           .view<const WorldTransform, const MeshRenderer>()
-           .each()) {
-    (void)entity;
-    const MeshResource *mesh = findMesh(renderer.mesh);
-    assert(mesh != nullptr && "MeshRenderer references a stale mesh handle");
-    if (mesh == nullptr) {
-      continue;
-    }
-    drawList.push_back(
-        {mesh, {world.matrix, glm::transpose(glm::inverse(world.matrix))}});
   }
 
   record(frame.commandBuffer, frame, imageIndex);
@@ -789,6 +1092,7 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
       !r) {
     return r;
   }
+  ++frameNumber;
 
   const VkSwapchainKHR swapchainHandle = swapchain->handle();
   VkPresentInfoKHR presentInfo{};
@@ -835,6 +1139,30 @@ std::expected<MeshHandle, Error> Renderer::createMesh(const MeshData &data) {
 }
 
 void Renderer::destroyMesh(MeshHandle mesh) { m_pImpl->destroyMesh(mesh); }
+
+std::expected<ShaderHandle, Error>
+Renderer::createShader(const ShaderSource &source) {
+  return m_pImpl->createShader(source);
+}
+
+void Renderer::destroyShader(ShaderHandle shader) {
+  m_pImpl->destroyShader(shader);
+}
+
+std::expected<MaterialHandle, Error>
+Renderer::createMaterial(ShaderHandle shader, const RenderState &state) {
+  return m_pImpl->createMaterial(shader, state);
+}
+
+void Renderer::destroyMaterial(MaterialHandle material) {
+  m_pImpl->destroyMaterial(material);
+}
+
+std::expected<void, Error>
+Renderer::setMaterialParam(MaterialHandle material, std::string_view name,
+                           const MaterialParam &value) {
+  return m_pImpl->setMaterialParam(material, name, value);
+}
 
 std::expected<void, Error> Renderer::render(const Scene &scene,
                                             const Camera &camera) {
