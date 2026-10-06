@@ -1,0 +1,12 @@
+{
+  "version": 6,
+  "configurePresets": [
+    { "name": "debug", "generator": "Ninja",
+      "binaryDir": "build/debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache" } },
+    { "name": "release", "inherits": "debug",
+      "binaryDir": "build/release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } }
+  ]
+}
