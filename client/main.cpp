@@ -1,3 +1,4 @@
+#include "local_player.h"
 #include "world_mesh.h"
 
 #include "base/cvar.h"
@@ -113,20 +114,26 @@ int main(int argc, char **argv) {
   overlay.setVisible(screenshotPath != nullptr);
   float lastFrameSeconds = 0.0F;
   renderer->setUiCallback([&] { overlay.draw(lastFrameSeconds); });
-
-  // Start at the first spawn.
-  Paper::PlayerState player;
-  float yaw = 0.0F;
-  if (const auto spawns = map.entitiesOfType("spawn"); !spawns.empty()) {
-    player.origin = spawns.front().origin;
-    yaw = spawns.front().yaw;
+  if (screenshotPath == nullptr) {
+    window->setCursorMode(Paper::CursorMode::Captured);
   }
+
+  LocalPlayer player(collision, movementCvars);
+  glm::vec3 spawnOrigin(0.0F, 2.0F, 0.0F);
+  float spawnYaw = 0.0F;
+  if (const auto spawns = map.entitiesOfType("spawn"); !spawns.empty()) {
+    spawnOrigin = spawns.front().origin;
+    spawnYaw = spawns.front().yaw;
+  }
+  player.respawn(spawnOrigin, spawnYaw);
 
   Paper::Camera camera;
   camera.nearPlane = 1.0F;
   camera.farPlane = 8000.0F;
   camera.fovY = glm::radians(90.0F);
 
+  bool f1Held = false;
+  bool rHeld = false;
   int frame = 0;
   double lastTime = window->time();
   while (!window->shouldClose()) {
@@ -142,14 +149,31 @@ int main(int argc, char **argv) {
     if (window->keyDown(Paper::Key::Escape)) {
       window->requestClose();
     }
+
+    // F1 toggles the debug overlay; with it open the cursor is free.
+    const bool f1 = window->keyDown(Paper::Key::F1);
+    if (f1 && !f1Held) {
+      overlay.toggle();
+      window->setCursorMode(overlay.visible() ? Paper::CursorMode::Normal
+                                              : Paper::CursorMode::Captured);
+    }
+    f1Held = f1;
+    const bool r = window->keyDown(Paper::Key::R);
+    if (r && !rHeld) {
+      player.respawn(spawnOrigin, spawnYaw);
+    }
+    rHeld = r;
+
     const double now = window->time();
     lastFrameSeconds = static_cast<float>(now - lastTime);
     lastTime = now;
 
-    camera.position = Paper::eyePosition(player);
-    camera.rotation = glm::angleAxis(yaw, glm::vec3(0.0F, 1.0F, 0.0F));
+    {
+      PAPER_ZONE("player update");
+      player.update(*window, lastFrameSeconds, !overlay.visible());
+    }
     Paper::TransformSystem::update(scene);
-    require(renderer->render(scene, camera));
+    require(renderer->render(scene, player.camera(camera)));
     PAPER_FRAME_MARK();
   }
 

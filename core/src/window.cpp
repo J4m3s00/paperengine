@@ -57,6 +57,8 @@ int toGlfw(Key key) {
     return GLFW_KEY_ESCAPE;
   case Key::F1:
     return GLFW_KEY_F1;
+  case Key::R:
+    return GLFW_KEY_R;
   }
   return GLFW_KEY_UNKNOWN;
 }

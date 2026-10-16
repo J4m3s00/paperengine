@@ -14,6 +14,7 @@ enum class Key {
   LeftControl,
   Escape,
   F1,
+  R,
 };
 
 enum class MouseButton {

@@ -1,0 +1,104 @@
+#pragma once
+
+#include "base/cvar.h"
+#include "base/fixed_timestep.h"
+#include "core/renderer/camera.h"
+#include "core/window.h"
+#include "game/collision.h"
+#include "game/movement.h"
+#include "game/tick.h"
+
+#include <glm/gtc/quaternion.hpp>
+
+#include <algorithm>
+#include <cmath>
+
+// The locally controlled player: turns window input into one UserCmd per
+// simulation tick (128 Hz), runs the shared movement code, and produces a
+// camera interpolated between the last two ticks. View angles update every
+// frame (not per tick) so mouse look has no tick-rate latency.
+class LocalPlayer {
+public:
+  LocalPlayer(const Paper::CollisionWorld &world, const Paper::MovementCvars &movement,
+              Paper::CvarRegistry &registry = Paper::cvars())
+      : m_world(world), m_movement(movement), m_step(Paper::kServerTickSeconds),
+        m_sensitivity(registry.add<float>("sensitivity", 2.0F, 0.01F, 50.0F,
+                                          "Mouse sensitivity (CS: degrees = 0.022 * value)")) {}
+
+  void respawn(const glm::vec3 &origin, float yaw) {
+    m_state = {};
+    m_state.origin = origin;
+    m_prev = m_state;
+    m_yaw = yaw;
+    m_pitch = 0.0F;
+    m_eyeHeight = Paper::kStandingEyeHeight;
+  }
+
+  // `lookEnabled`: apply mouse look and movement keys (false while a UI has the
+  // mouse, though the simulation keeps running).
+  void update(const Paper::Window &window, double frameSeconds, bool inputEnabled) {
+    if (inputEnabled) {
+      const glm::dvec2 delta = window.mouseDelta();
+      const float radiansPerCount = glm::radians(0.022F) * m_sensitivity.value();
+      m_yaw -= static_cast<float>(delta.x) * radiansPerCount;
+      m_pitch = std::clamp(m_pitch - static_cast<float>(delta.y) * radiansPerCount,
+                           -kMaxPitch, kMaxPitch);
+    }
+
+    // Keys are sampled once per frame and held for every tick of that frame.
+    Paper::UserCmd cmd;
+    cmd.yaw = m_yaw;
+    cmd.pitch = m_pitch;
+    if (inputEnabled) {
+      cmd.forward = (window.keyDown(Paper::Key::W) ? 1.0F : 0.0F) -
+                    (window.keyDown(Paper::Key::S) ? 1.0F : 0.0F);
+      cmd.side = (window.keyDown(Paper::Key::D) ? 1.0F : 0.0F) -
+                 (window.keyDown(Paper::Key::A) ? 1.0F : 0.0F);
+      cmd.jump = window.keyDown(Paper::Key::Space);
+      cmd.duck = window.keyDown(Paper::Key::LeftControl);
+      cmd.walk = window.keyDown(Paper::Key::LeftShift);
+    }
+
+    m_step.advance(frameSeconds);
+    const Paper::MovementParams params = m_movement.params();
+    while (m_step.consumeStep()) {
+      m_prev = m_state;
+      Paper::movePlayer(m_state, cmd, m_world, params, Paper::kDefaultMaxSpeed,
+                        static_cast<float>(m_step.stepSeconds()));
+    }
+
+    // Eye height eases between standing and crouched instead of snapping.
+    const float targetEye = m_state.ducked ? Paper::kDuckedEyeHeight : Paper::kStandingEyeHeight;
+    const float maxChange = kEyeSpeed * static_cast<float>(frameSeconds);
+    m_eyeHeight += std::clamp(targetEye - m_eyeHeight, -maxChange, maxChange);
+  }
+
+  [[nodiscard]] const Paper::PlayerState &state() const { return m_state; }
+  [[nodiscard]] float yaw() const { return m_yaw; }
+  [[nodiscard]] float pitch() const { return m_pitch; }
+
+  // The view for rendering: position blended between the last two ticks,
+  // orientation straight from the latest mouse input.
+  [[nodiscard]] Paper::Camera camera(Paper::Camera base) const {
+    const auto alpha = static_cast<float>(m_step.alpha());
+    base.position = glm::mix(m_prev.origin, m_state.origin, alpha) +
+                    glm::vec3(0.0F, m_eyeHeight, 0.0F);
+    base.rotation = glm::angleAxis(m_yaw, glm::vec3(0.0F, 1.0F, 0.0F)) *
+                    glm::angleAxis(m_pitch, glm::vec3(1.0F, 0.0F, 0.0F));
+    return base;
+  }
+
+private:
+  static constexpr float kMaxPitch = glm::radians(89.0F);
+  static constexpr float kEyeSpeed = 200.0F; // units per second
+
+  const Paper::CollisionWorld &m_world;
+  const Paper::MovementCvars &m_movement;
+  Paper::FixedTimestep m_step;
+  Paper::Cvar<float> &m_sensitivity;
+  Paper::PlayerState m_state;
+  Paper::PlayerState m_prev;
+  float m_yaw = 0.0F;
+  float m_pitch = 0.0F;
+  float m_eyeHeight = Paper::kStandingEyeHeight;
+};
