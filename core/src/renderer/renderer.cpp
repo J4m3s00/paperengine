@@ -1,3 +1,4 @@
+#include "base/profiler.h"
 #include "core/renderer/renderer.h"
 
 #include "core/renderer/shader.h"
@@ -1311,6 +1312,7 @@ std::expected<void, Error> Renderer::Impl::saveScreenshot() {
 
 std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
                                                    const Camera &camera) {
+  PAPER_ZONE("Renderer::render");
   const int framebufferWidth = window.framebufferWidth();
   const int framebufferHeight = window.framebufferHeight();
   if (framebufferWidth == 0 || framebufferHeight == 0) {
@@ -1406,10 +1408,13 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
                         shader->pipelineLayout,
                         {world.matrix, glm::transpose(glm::inverse(world.matrix))}});
   }
-  std::ranges::sort(drawList, [](const DrawItem &a, const DrawItem &b) {
-    return std::pair(sortKey(a.pipeline), sortKey(a.material)) <
-           std::pair(sortKey(b.pipeline), sortKey(b.material));
-  });
+  {
+    PAPER_ZONE("sort draw list");
+    std::ranges::sort(drawList, [](const DrawItem &a, const DrawItem &b) {
+      return std::pair(sortKey(a.pipeline), sortKey(a.material)) <
+             std::pair(sortKey(b.pipeline), sortKey(b.material));
+    });
+  }
 
   std::uint32_t imageIndex = 0;
   const VkResult acquired =
@@ -1495,6 +1500,7 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
   presentInfo.swapchainCount = 1;
   presentInfo.pSwapchains = &swapchainHandle;
   presentInfo.pImageIndices = &imageIndex;
+  PAPER_ZONE("present");
   const VkResult presented =
       vkQueuePresentKHR(context->presentQueue(), &presentInfo);
   frameIndex = (frameIndex + 1) % kFramesInFlight;

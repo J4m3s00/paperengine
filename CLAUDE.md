@@ -41,6 +41,9 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 - Private headers live in `core/src` (on the private include path): `vkb_error.h`, `vk_check.h`.
 - `core/src/engine.cpp` and `core/include/core/engine.h` are placeholders (essentially empty).
 
+- Profiling: `PAPER_ENABLE_PROFILER` (ON in the debug preset, OFF in release) compiles in Tracy (on-demand, so it costs nothing until the viewer connects). Use `PAPER_ZONE("name")` and `PAPER_FRAME_MARK()` from `base/profiler.h`; they compile to nothing when off.
+- Tests: doctest in `game/tests` (`ctest --preset debug`). Cvars (`base/cvar.h`): typed, clamped, settable from strings/config files; game code registers them on `Paper::cvars()`.
+
 ## Conventions
 
 Compiler flags `-Wall -Wextra -Wpedantic` apply to `core` only. Code style: 2-space indent, `m_` member prefix, `[[nodiscard]]` getters, deleted copy/move on RAII Vulkan wrappers (clang-format LLVM-like style).

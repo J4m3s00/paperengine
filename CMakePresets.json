@@ -4,10 +4,12 @@
     { "name": "debug", "generator": "Ninja",
       "binaryDir": "build/debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache" } },
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "PAPER_ENABLE_PROFILER": "ON" } },
     { "name": "release", "inherits": "debug",
       "binaryDir": "build/release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } } ],
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release",
+        "PAPER_ENABLE_PROFILER": "OFF" } } ],
   "testPresets": [
     { "name": "debug", "configurePreset": "debug",
       "output": { "outputOnFailure": true } }

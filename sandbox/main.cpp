@@ -1,3 +1,4 @@
+#include "base/profiler.h"
 #include "core/renderer/renderer.h"
 #include "core/scene/scene.h"
 #include "core/scene/transform_system.h"
@@ -201,6 +202,7 @@ int main(int argc, char **argv) {
     Paper::TransformSystem::update(scene);
 
     require(renderer->render(scene, flyCamera.camera()));
+    PAPER_FRAME_MARK();
   }
 
   if (model) {

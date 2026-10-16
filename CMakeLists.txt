@@ -51,6 +51,18 @@ FetchContent_Declare(doctest
   GIT_REPOSITORY https://github.com/doctest/doctest.git
   GIT_TAG        v2.4.12)
 
+FetchContent_Declare(tracy
+  GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+  GIT_TAG        v0.14.1)
+
+option(PAPER_ENABLE_PROFILER "Compile in Tracy profiler zones" OFF)
+if(PAPER_ENABLE_PROFILER)
+  # Only collect data while the Tracy viewer is connected.
+  set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+  set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(tracy)
+endif()
+
 FetchContent_MakeAvailable(doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
 
 enable_testing()
