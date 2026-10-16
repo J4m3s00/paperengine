@@ -21,3 +21,54 @@ Vocabulary for the rendering pipeline. Use these terms in issues, code and tests
 - **Binding conventions**: Set 0 = per frame (camera, light), set 1 = per material, per-object model matrix via push constants. Fixed vertex layout: location 0 position, 1 normal, 2 uv, 3 tangent.
 - **Error**: `Paper::Error {ErrorCode code; std::string message;}`, returned as `std::expected<T, Error>`.
 - **Conventions**: Right-handed, Y up, depth 0..1, negative viewport height for the Vulkan Y flip, counter-clockwise front face, sRGB swapchain with linear shading.
+
+## Game (planned, see `docs/plan/`)
+
+**Simulation**:
+The shared, headless gameplay code (movement, collision, weapons, rules) that runs identically on server and client.
+_Avoid_: game logic, physics
+
+**Server**:
+The single authoritative process that runs the Simulation and decides positions, hits and damage.
+_Avoid_: host
+
+**Tick**:
+One fixed step of the Simulation (128 per second on the Server).
+_Avoid_: frame (a frame is a rendered image)
+
+**Usercmd**:
+One timestamped bundle of a player's input (buttons, view angles, movement) sent from client to Server.
+_Avoid_: input packet
+
+**Snapshot**:
+The Server's state of the replicated entities at one Tick, sent to clients (delta-compressed against an acked baseline).
+_Avoid_: update, state packet
+
+**Prediction**:
+The client running the Simulation for its own player ahead of the Server, using Usercmds the Server has not acknowledged yet.
+
+**Reconciliation**:
+Correcting the client's predicted state to the Server's state and replaying unacknowledged Usercmds.
+
+**Interpolation**:
+Rendering remote players slightly in the past, blended between two Snapshots.
+
+**Lag compensation**:
+The Server rewinding other players' hitboxes to the tick the shooter saw before resolving a shot.
+
+**Hitbox**:
+A volume on a player that a shot can hit, each with a damage multiplier (head, chest, ...). Supplied by a `HitboxProvider`.
+
+**Hull trace**:
+A swept test of a player-sized axis-aligned box against the world, used by movement.
+_Avoid_: raycast (that is a zero-width trace)
+
+**Spray pattern**:
+The fixed per-weapon sequence of recoil offsets while firing continuously.
+
+**Dev world**:
+The first playable: one explorable map with stationary bots for practising movement and shooting.
+
+**Cvar**:
+A named, typed, runtime-tunable setting (e.g. air acceleration).
+_Avoid_: config variable, setting
