@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Paper Engine: an early-stage C++23 Vulkan 1.3 engine (CMake project `myengine`). Two targets: `core` (static library, namespace `Paper`) and `sandbox` (executable that drives `core`). Private GitHub repo (`J4m3s00/paperengine`); no tests or linter configured yet.
+Paper Engine: an early-stage C++23 Vulkan 1.3 engine (CMake project `myengine`). Targets (ADR 0012, plan in `docs/plan/`): `base` (header-only: `Error`, glm, spdlog), `core` (engine static library, namespace `Paper`), `game` (shared headless simulation), `net` (protocol/transport), `sandbox` (drives `core`), `client` and `server` (stubs for now; `server` must stay free of Vulkan/GLFW and links only `game` + `net`). `game` and `net` depend only on `base`. Private GitHub repo (`J4m3s00/paperengine`); no tests or linter configured yet.
 
 ## Commands
 
@@ -23,7 +23,7 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 - `core/include/core/*.h` is the public header root (included as `"core/xxx.h"`); implementations are in `core/src/`. New `.cpp` files must be added to the `add_library(core ...)` list in `core/CMakeLists.txt` (no globbing).
 - Dependency visibility matters: `glfw`, `glm`, `spdlog`, `Vulkan` are PUBLIC; `vk-bootstrap` and VMA are PRIVATE. Headers must therefore not include `VkBootstrap.h` or `vk_mem_alloc.h`; `vulkan_context.h` forward-declares `VmaAllocator`. `GLFW_INCLUDE_NONE` is defined for core.
 - VMA is compiled once in `src/vma_impl.cpp` (`VMA_IMPLEMENTATION`); other TUs include `vk_mem_alloc.h` with `VMA_VULKAN_VERSION 1003000` defined the same way. Its include dirs are added as SYSTEM to silence third-party warnings.
-- Errors are `std::expected<T, Paper::Error>` (`core/error.h`, see `docs/adr/0001-expected-for-error-handling.md`). Fallible types (`Window`, `VulkanContext`, `Swapchain`) have private constructors and a static `create(...)` returning `std::expected<std::unique_ptr<T>, Error>`; they stay non-copyable/non-movable. vk-bootstrap results are translated by `unwrap` in `core/src/vkb_error.h`.
+- Errors are `std::expected<T, Paper::Error>` (`base/error.h`, see `docs/adr/0001-expected-for-error-handling.md`). Fallible types (`Window`, `VulkanContext`, `Swapchain`) have private constructors and a static `create(...)` returning `std::expected<std::unique_ptr<T>, Error>`; they stay non-copyable/non-movable. vk-bootstrap results are translated by `unwrap` in `core/src/vkb_error.h`.
 - `Window` uses pimpl (GLFW details hidden in `Window::Impl`), exposes `nativeHandle()` for surface creation.
 - `VulkanContext` owns instance, debug messenger, surface, physical/logical device, queues and VMA allocator, built via vk-bootstrap. Requires Vulkan 1.3 with `dynamicRendering` and `synchronization2`. Validation layers default on unless `NDEBUG`. Non-copyable/non-movable; must outlive everything created from it.
 - `Swapchain` borrows `const VulkanContext&` and builds images/views; `recreate(window)` returns `expected<bool, Error>`: `false` (keeping the old swapchain) while the framebuffer is 0×0. The sandbox loop currently triggers `recreate` by comparing framebuffer size to swapchain extent.

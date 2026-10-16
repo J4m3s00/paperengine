@@ -49,5 +49,10 @@ FetchContent_Declare(stb_image_write
 
 FetchContent_MakeAvailable(glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
 
+add_subdirectory(base)
+add_subdirectory(game)
+add_subdirectory(net)
 add_subdirectory(core)
 add_subdirectory(sandbox)
+add_subdirectory(client)
+add_subdirectory(server)

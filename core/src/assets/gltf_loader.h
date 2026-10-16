@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/assets/model.h"
-#include "core/error.h"
+#include "base/error.h"
 #include "core/renderer/renderer.h"
 
 #include <expected>
