@@ -229,3 +229,26 @@ TEST_CASE("replay golden scenarios do what they say") {
   CHECK(std::hypot(surf.velocity.x, surf.velocity.z) > 500.0F);
 }
 #endif
+
+#ifdef PAPER_MAPS_DIR
+// Run with: game_tests --no-skip -tc="movement benchmark"
+TEST_CASE("movement benchmark" * doctest::skip()) {
+  auto map = loadMap(std::filesystem::path(PAPER_MAPS_DIR) / "dev_world.json");
+  REQUIRE(map);
+  auto world = map->buildCollision();
+  REQUIRE(world);
+  const Replay replay = record(*world, spawnAt({-1800, 2, 1900}), 128 * 12,
+                               scenarios()[3].policy); // strafe-hop chain: all code paths
+  constexpr int kRuns = 200;
+  float sink = 0.0F;
+  const auto begin = std::chrono::steady_clock::now();
+  for (int i = 0; i < kRuns; ++i) {
+    sink += runReplay(replay, *world).origin.x;
+  }
+  const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now() - begin).count();
+  const double perTick = static_cast<double>(ns) / (kRuns * static_cast<double>(replay.cmds.size()));
+  MESSAGE("movePlayer: ", perTick, " ns/tick (", perTick / (kServerTickSeconds * 1e9) * 100.0,
+          "% of the 128 Hz tick budget, sink ", sink, ")");
+}
+#endif

@@ -1,4 +1,5 @@
 #include "local_player.h"
+#include "movement_hud.h"
 #include "world_mesh.h"
 
 #include "base/cvar.h"
@@ -19,6 +20,8 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 // Logs the error and exits; the client treats any engine error as fatal.
@@ -61,10 +64,12 @@ glm::vec3 colorFor(const std::string &material) {
 } // namespace
 
 // Usage: client [--map map.json] [--screenshot out.png] [--record out.replay.json]
+//               [--set cvar value]...
 int main(int argc, char **argv) {
   std::filesystem::path mapPath = std::filesystem::path(PAPER_MAPS_DIR) / "dev_world.json";
   const char *screenshotPath = nullptr;
   const char *recordPath = nullptr;
+  std::vector<std::pair<std::string, std::string>> cvarOverrides;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     if (arg == "--map" && i + 1 < argc) {
@@ -73,6 +78,9 @@ int main(int argc, char **argv) {
       screenshotPath = argv[++i];
     } else if (arg == "--record" && i + 1 < argc) {
       recordPath = argv[++i];
+    } else if (arg == "--set" && i + 2 < argc) {
+      cvarOverrides.emplace_back(argv[i + 1], argv[i + 2]);
+      i += 2;
     }
   }
 
@@ -117,7 +125,6 @@ int main(int argc, char **argv) {
   Paper::DebugOverlay overlay;
   overlay.setVisible(screenshotPath != nullptr);
   float lastFrameSeconds = 0.0F;
-  renderer->setUiCallback([&] { overlay.draw(lastFrameSeconds); });
   if (screenshotPath == nullptr) {
     window->setCursorMode(Paper::CursorMode::Captured);
   }
@@ -135,9 +142,21 @@ int main(int argc, char **argv) {
   player.respawn(spawnOrigin, spawnYaw);
 
   Paper::Camera camera;
+  Paper::Camera viewCamera;
   camera.nearPlane = 1.0F;
   camera.farPlane = 8000.0F;
   camera.fovY = glm::radians(90.0F);
+
+  MovementHud hud;
+  renderer->setUiCallback([&] {
+    overlay.draw(lastFrameSeconds);
+    hud.setDetailsVisible(overlay.visible());
+    hud.draw(player.state(), viewCamera, collision);
+  });
+
+  for (const auto &[name, value] : cvarOverrides) {
+    require(Paper::cvars().set(name, value));
+  }
 
   bool f1Held = false;
   bool rHeld = false;
@@ -180,7 +199,8 @@ int main(int argc, char **argv) {
       player.update(*window, lastFrameSeconds, !overlay.visible());
     }
     Paper::TransformSystem::update(scene);
-    require(renderer->render(scene, player.camera(camera)));
+    viewCamera = player.camera(camera);
+    require(renderer->render(scene, viewCamera));
     PAPER_FRAME_MARK();
   }
 

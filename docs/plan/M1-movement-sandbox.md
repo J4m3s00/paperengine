@@ -16,3 +16,11 @@ Single-player Source-style movement in a test map. This is the most important fe
 - Movement reproduces CS:GO reference behaviour on the numbers we choose (max ground speed, bhop gain, air-strafe gain, jump height, step height) and feels right to the developer.
 - Replay tests pass and run in CI-friendly time.
 - Sim tick cost is measured and recorded (target: far below 1% of the 7.8 ms tick budget per player).
+
+## Status: implemented (issues #16-#21)
+
+Measured on an Apple M4, release build:
+
+- Hull trace over 2000 brushes: ~230 ns. `movePlayer`: ~132 ns per player per tick (0.002% of the 7.8 ms tick budget).
+- Ground speed reaches 249 u/s after ~0.55 s (friction makes the last units creep, as in Source); jump rises ~57 units; strafe-hopping gains past the 275 u/s jump cap; steep ramps (normal.y < 0.7) cannot be stood on.
+- Known gaps: edge friction, crouch transition timing, ladders, water, triangle-mesh collision. Interactive feel (mouse, keyboard) has not been tuned yet; the numbers above come from tests and replays.
