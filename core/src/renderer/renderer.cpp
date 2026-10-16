@@ -9,6 +9,7 @@
 
 #include "assets/gltf_loader.h"
 #include "gpu_resources.h"
+#include "imgui_layer.h"
 #include "pipeline.h"
 #include "resource_pool.h"
 #include "shader_reflection.h"
@@ -265,6 +266,11 @@ struct Renderer::Impl {
   // Number of frames submitted so far; drives the deletion queue.
   std::uint64_t frameNumber = 0;
   GpuImage depth;
+  // Dear ImGui backend; destroyed first, while the device is still alive.
+  std::unique_ptr<ImGuiLayer> imguiLayer;
+  std::function<void()> uiCallback;
+  // True when this frame's UI draw data should be recorded.
+  bool uiFrameReady = false;
   // Set 0 (per frame).
   VkDescriptorSetLayout frameSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool frameDescriptorPool = VK_NULL_HANDLE;
@@ -363,6 +369,7 @@ Renderer::Impl::~Impl() {
   }
   const VkDevice device = context->device();
   vkDeviceWaitIdle(device);
+  imguiLayer.reset();
 
   // Order matters: resources that free descriptor sets / layouts must go
   // before the pools and the device-level objects below.
@@ -417,7 +424,17 @@ std::expected<void, Error> Renderer::Impl::init() {
   if (auto descriptors = createDescriptors(); !descriptors) {
     return descriptors;
   }
-  return createDefaultTextures();
+  if (auto textures = createDefaultTextures(); !textures) {
+    return textures;
+  }
+  auto createdLayer =
+      ImGuiLayer::create(window, *context, swapchain->format(), kDepthFormat,
+                         static_cast<std::uint32_t>(swapchain->images().size()));
+  if (!createdLayer) {
+    return std::unexpected(createdLayer.error());
+  }
+  imguiLayer = std::move(*createdLayer);
+  return {};
 }
 
 std::expected<void, Error> Renderer::Impl::createDepth() {
@@ -1229,6 +1246,10 @@ void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
     vkCmdDrawIndexed(cmd, draw.mesh->indexCount, 1, 0, 0, 0);
   }
 
+  if (uiFrameReady) {
+    imguiLayer->record(cmd);
+  }
+
   vkCmdEndRendering(cmd);
 
   if (screenshotBuffer.handle() != VK_NULL_HANDLE) {
@@ -1453,6 +1474,13 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
     screenshotBuffer = std::move(*buffer);
   }
 
+  uiFrameReady = uiCallback != nullptr;
+  if (uiFrameReady) {
+    PAPER_ZONE("build UI");
+    imguiLayer->beginFrame();
+    uiCallback();
+    imguiLayer->endFrame();
+  }
   record(frame.commandBuffer, frame, imageIndex);
 
   VkSemaphoreSubmitInfo waitInfo{};
@@ -1643,6 +1671,18 @@ void Renderer::destroyModel(ModelHandle model) {
   if (taken) {
     destroyModelResources(*this, *taken);
   }
+}
+
+void Renderer::setUiCallback(std::function<void()> callback) {
+  m_pImpl->uiCallback = std::move(callback);
+}
+
+bool Renderer::uiWantsMouse() const {
+  return m_pImpl->uiCallback && m_pImpl->imguiLayer->wantsMouse();
+}
+
+bool Renderer::uiWantsKeyboard() const {
+  return m_pImpl->uiCallback && m_pImpl->imguiLayer->wantsKeyboard();
 }
 
 void Renderer::requestScreenshot(const std::filesystem::path &path) {

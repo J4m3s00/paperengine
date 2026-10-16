@@ -55,6 +55,11 @@ FetchContent_Declare(tracy
   GIT_REPOSITORY https://github.com/wolfpld/tracy.git
   GIT_TAG        v0.14.1)
 
+# Dear ImGui has no CMake build; core/CMakeLists.txt builds it from source.
+FetchContent_Declare(imgui
+  GIT_REPOSITORY https://github.com/ocornut/imgui.git
+  GIT_TAG        v1.93.0)
+
 option(PAPER_ENABLE_PROFILER "Compile in Tracy profiler zones" OFF)
 if(PAPER_ENABLE_PROFILER)
   # Only collect data while the Tracy viewer is connected.
@@ -63,7 +68,7 @@ if(PAPER_ENABLE_PROFILER)
   FetchContent_MakeAvailable(tracy)
 endif()
 
-FetchContent_MakeAvailable(doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
+FetchContent_MakeAvailable(imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
 
 enable_testing()
 

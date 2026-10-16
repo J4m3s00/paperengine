@@ -10,12 +10,26 @@ FetchContent_Declare(VulkanMemoryAllocator
 
 FetchContent_MakeAvailable(vk-bootstrap VulkanMemoryAllocator)
 
+# Dear ImGui (core + GLFW and Vulkan backends), built from the fetched sources.
+add_library(imgui STATIC
+  ${imgui_SOURCE_DIR}/imgui.cpp
+  ${imgui_SOURCE_DIR}/imgui_draw.cpp
+  ${imgui_SOURCE_DIR}/imgui_tables.cpp
+  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
+target_compile_options(imgui PRIVATE -w)
+
 add_library(core STATIC
   src/window.cpp
   src/engine.cpp
   src/vulkan_context.cpp
   src/swapchain.cpp
   src/renderer/renderer.cpp
+  src/renderer/imgui_layer.cpp
+  src/debug/debug_overlay.cpp
   src/renderer/shader.cpp
   src/renderer/camera.cpp
   src/renderer/mesh.cpp
@@ -30,7 +44,7 @@ add_library(core STATIC
   src/vma_impl.cpp)
 target_include_directories(core PUBLIC include PRIVATE src)
 target_link_libraries(core
-  PUBLIC  base glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
+  PUBLIC  base imgui glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
   PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
           spirv-reflect-static
           fastgltf::fastgltf)

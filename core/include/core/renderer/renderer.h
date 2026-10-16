@@ -14,6 +14,7 @@
 
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -120,6 +121,15 @@ public:
   // is captured by the following render() call, which waits for the GPU and
   // returns an error if the file cannot be written.
   void requestScreenshot(const std::filesystem::path &path);
+
+  // Registers a function that builds a Dear ImGui UI. render() calls it once
+  // per frame (between ImGui::NewFrame and ImGui::Render) and draws the result
+  // on top of the scene. Pass an empty function to disable the UI.
+  void setUiCallback(std::function<void()> callback);
+  // True while ImGui wants the mouse (cursor over a widget) or keyboard (text
+  // field active); the application should then ignore that input.
+  [[nodiscard]] bool uiWantsMouse() const;
+  [[nodiscard]] bool uiWantsKeyboard() const;
 
   // Renders and presents one frame of `scene` seen through `camera`. Run
   // TransformSystem::update(scene) first. Handles resize and minimise

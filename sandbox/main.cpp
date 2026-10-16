@@ -1,4 +1,6 @@
 #include "base/profiler.h"
+#include "base/cvar.h"
+#include "core/debug/debug_overlay.h"
 #include "core/renderer/renderer.h"
 #include "core/scene/scene.h"
 #include "core/scene/transform_system.h"
@@ -167,6 +169,16 @@ int main(int argc, char **argv) {
     scene.setParent(grandchild, child);
   }
 
+  // F1 toggles the debug overlay (frame times, cvars).
+  auto &spinSpeed = Paper::cvars().add<float>(
+      "demo_spin_speed", 1.0F, 0.0F, 5.0F, "Rotation speed of the demo cubes");
+  Paper::DebugOverlay overlay;
+  // Screenshot runs show the overlay so it can be checked without a display.
+  overlay.setVisible(screenshotPath != nullptr);
+  float lastFrameSeconds = 0.0F;
+  renderer->setUiCallback([&] { overlay.draw(lastFrameSeconds); });
+  bool f1Held = false;
+
   int frame = 0;
   double lastTime = window->time();
   while (!window->shouldClose()) {
@@ -183,11 +195,20 @@ int main(int argc, char **argv) {
       window->requestClose();
     }
 
+    const bool f1 = window->keyDown(Paper::Key::F1);
+    if (f1 && !f1Held) {
+      overlay.toggle();
+    }
+    f1Held = f1;
+
     const double now = window->time();
-    flyCamera.update(*window, static_cast<float>(now - lastTime));
+    lastFrameSeconds = static_cast<float>(now - lastTime);
+    if (!renderer->uiWantsMouse() && !renderer->uiWantsKeyboard()) {
+      flyCamera.update(*window, lastFrameSeconds);
+    }
     lastTime = now;
 
-    const auto t = static_cast<float>(now);
+    const auto t = static_cast<float>(now) * spinSpeed.value();
     if (parent != entt::null) {
       scene.registry().get<Paper::Transform>(parent).rotation =
           glm::angleAxis(t * 0.6F, glm::vec3(0.0F, 1.0F, 0.0F));

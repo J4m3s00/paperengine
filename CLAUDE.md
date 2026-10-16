@@ -42,6 +42,7 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 - `core/src/engine.cpp` and `core/include/core/engine.h` are placeholders (essentially empty).
 
 - Profiling: `PAPER_ENABLE_PROFILER` (ON in the debug preset, OFF in release) compiles in Tracy (on-demand, so it costs nothing until the viewer connects). Use `PAPER_ZONE("name")` and `PAPER_FRAME_MARK()` from `base/profiler.h`; they compile to nothing when off.
+- Debug UI: Dear ImGui (v1.93, built in `core/CMakeLists.txt`; GLFW + Vulkan dynamic-rendering backends in `core/src/renderer/imgui_layer.cpp`) is owned by the Renderer. `Renderer::setUiCallback(fn)` runs `fn` each frame and draws it over the scene; `uiWantsMouse/Keyboard()` tell the app to ignore input. `DebugOverlay` (`core/debug/debug_overlay.h`) shows frame times, avg/1% low FPS and live-editable cvars; the sandbox toggles it with F1 (and shows it in `--screenshot` runs).
 - Tests: doctest in `game/tests` (`ctest --preset debug`). Cvars (`base/cvar.h`): typed, clamped, settable from strings/config files; game code registers them on `Paper::cvars()`.
 
 ## Conventions
