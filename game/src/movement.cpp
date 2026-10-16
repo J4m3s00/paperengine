@@ -64,6 +64,9 @@ constexpr float kCmdMoveScale = 450.0F;
 constexpr float kNonJumpVelocity = 140.0F;
 // Ground probe distance.
 constexpr float kGroundProbe = 2.0F;
+// Clip velocity slightly away from surfaces so float error cannot leave it
+// pointing into one (Quake 3's OVERCLIP).
+constexpr float kOverClip = 1.001F;
 constexpr int kMaxBumps = 4;
 constexpr int kMaxClipPlanes = 5;
 
@@ -184,13 +187,27 @@ void tryPlayerMove(const Ctx &c) {
       s.velocity = glm::vec3(0.0F);
       break;
     }
+    // Hitting a plane we already clipped against means rounding left us moving
+    // slightly into it: nudge away instead of treating it as a crease (two equal
+    // planes have a zero cross product and would stop the player dead).
+    bool repeated = false;
+    for (int p = 0; p < numPlanes; ++p) {
+      if (glm::dot(t.normal, planes[p]) > 0.99F) {
+        s.velocity += t.normal;
+        repeated = true;
+        break;
+      }
+    }
+    if (repeated) {
+      continue;
+    }
     planes[numPlanes++] = t.normal;
 
     // Find a velocity that runs parallel to every plane touched this tick.
     int i = 0;
     glm::vec3 clipped(0.0F);
     for (; i < numPlanes; ++i) {
-      clipped = clipVelocity(originalVelocity, planes[i], 1.0F);
+      clipped = clipVelocity(originalVelocity, planes[i], kOverClip);
       int j = 0;
       for (; j < numPlanes; ++j) {
         if (j != i && glm::dot(clipped, planes[j]) < 0.0F) {

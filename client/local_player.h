@@ -6,12 +6,15 @@
 #include "core/window.h"
 #include "game/collision.h"
 #include "game/movement.h"
+#include "game/replay.h"
 #include "game/tick.h"
 
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <string>
 
 // The locally controlled player: turns window input into one UserCmd per
 // simulation tick (128 Hz), runs the shared movement code, and produces a
@@ -32,6 +35,24 @@ public:
     m_yaw = yaw;
     m_pitch = 0.0F;
     m_eyeHeight = Paper::kStandingEyeHeight;
+    restartRecording();
+  }
+
+  // Records every tick's usercmd from the next respawn() on; the recording
+  // restarts at each respawn so it always begins at a known state.
+  void enableRecording(std::string mapName) {
+    m_recording.emplace();
+    m_recording->map = std::move(mapName);
+    restartRecording();
+  }
+  // The recording so far, with the current state as its expected end state.
+  [[nodiscard]] std::optional<Paper::Replay> recording() const {
+    if (!m_recording) {
+      return std::nullopt;
+    }
+    Paper::Replay replay = *m_recording;
+    replay.expected = m_state;
+    return replay;
   }
 
   // `lookEnabled`: apply mouse look and movement keys (false while a UI has the
@@ -61,8 +82,14 @@ public:
 
     m_step.advance(frameSeconds);
     const Paper::MovementParams params = m_movement.params();
+    if (m_recording && m_recording->cmds.empty()) {
+      m_recording->params = params;
+    }
     while (m_step.consumeStep()) {
       m_prev = m_state;
+      if (m_recording) {
+        m_recording->cmds.push_back(cmd);
+      }
       Paper::movePlayer(m_state, cmd, m_world, params, Paper::kDefaultMaxSpeed,
                         static_cast<float>(m_step.stepSeconds()));
     }
@@ -89,6 +116,15 @@ public:
   }
 
 private:
+  void restartRecording() {
+    if (m_recording) {
+      m_recording->cmds.clear();
+      m_recording->start = m_state;
+      m_recording->params = m_movement.params();
+      m_recording->maxSpeed = Paper::kDefaultMaxSpeed;
+    }
+  }
+
   static constexpr float kMaxPitch = glm::radians(89.0F);
   static constexpr float kEyeSpeed = 200.0F; // units per second
 
@@ -101,4 +137,5 @@ private:
   float m_yaw = 0.0F;
   float m_pitch = 0.0F;
   float m_eyeHeight = Paper::kStandingEyeHeight;
+  std::optional<Paper::Replay> m_recording;
 };

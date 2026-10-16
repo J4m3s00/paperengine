@@ -10,6 +10,7 @@
 #include "core/window.h"
 #include "game/map.h"
 #include "game/movement.h"
+#include "game/replay.h"
 
 #include <spdlog/spdlog.h>
 
@@ -59,16 +60,19 @@ glm::vec3 colorFor(const std::string &material) {
 }
 } // namespace
 
-// Usage: client [--map map.json] [--screenshot out.png]
+// Usage: client [--map map.json] [--screenshot out.png] [--record out.replay.json]
 int main(int argc, char **argv) {
   std::filesystem::path mapPath = std::filesystem::path(PAPER_MAPS_DIR) / "dev_world.json";
   const char *screenshotPath = nullptr;
+  const char *recordPath = nullptr;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     if (arg == "--map" && i + 1 < argc) {
       mapPath = argv[++i];
     } else if (arg == "--screenshot" && i + 1 < argc) {
       screenshotPath = argv[++i];
+    } else if (arg == "--record" && i + 1 < argc) {
+      recordPath = argv[++i];
     }
   }
 
@@ -125,6 +129,9 @@ int main(int argc, char **argv) {
     spawnOrigin = spawns.front().origin;
     spawnYaw = spawns.front().yaw;
   }
+  if (recordPath != nullptr) {
+    player.enableRecording(mapPath.filename().string());
+  }
   player.respawn(spawnOrigin, spawnYaw);
 
   Paper::Camera camera;
@@ -175,6 +182,13 @@ int main(int argc, char **argv) {
     Paper::TransformSystem::update(scene);
     require(renderer->render(scene, player.camera(camera)));
     PAPER_FRAME_MARK();
+  }
+
+  if (recordPath != nullptr) {
+    if (const auto recording = player.recording()) {
+      require(Paper::saveReplay(recordPath, *recording));
+      spdlog::info("Recorded {} ticks to {}", recording->cmds.size(), recordPath);
+    }
   }
 
   for (const auto material : materialHandles) {
