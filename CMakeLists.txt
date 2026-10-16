@@ -47,7 +47,13 @@ FetchContent_Declare(stb_image_write
   URL https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_image_write.h
   DOWNLOAD_NO_EXTRACT TRUE)
 
-FetchContent_MakeAvailable(glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
+FetchContent_Declare(doctest
+  GIT_REPOSITORY https://github.com/doctest/doctest.git
+  GIT_TAG        v2.4.12)
+
+FetchContent_MakeAvailable(doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
+
+enable_testing()
 
 add_subdirectory(base)
 add_subdirectory(game)

@@ -7,6 +7,9 @@
         "CMAKE_CXX_COMPILER_LAUNCHER": "ccache" } },
     { "name": "release", "inherits": "debug",
       "binaryDir": "build/release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } } ],
+  "testPresets": [
+    { "name": "debug", "configurePreset": "debug",
+      "output": { "outputOnFailure": true } }
   ]
 }

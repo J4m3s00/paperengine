@@ -4,3 +4,7 @@ add_library(game STATIC src/game.cpp)
 target_include_directories(game PUBLIC include)
 target_link_libraries(game PUBLIC base)
 target_compile_options(game PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(game_tests tests/main.cpp tests/tick_test.cpp)
+target_link_libraries(game_tests PRIVATE game doctest::doctest)
+add_test(NAME game_tests COMMAND game_tests)
