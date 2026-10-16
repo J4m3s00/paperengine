@@ -11,6 +11,7 @@ enum class ErrorCode {
   Shader,
   InvalidArgument,
   Asset,
+  NotFound,
 };
 
 struct Error {
