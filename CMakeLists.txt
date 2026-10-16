@@ -55,6 +55,11 @@ FetchContent_Declare(tracy
   GIT_REPOSITORY https://github.com/wolfpld/tracy.git
   GIT_TAG        v0.14.1)
 
+FetchContent_Declare(nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.12.0)
+set(JSON_Install OFF CACHE BOOL "" FORCE)
+
 # Dear ImGui has no CMake build; core/CMakeLists.txt builds it from source.
 FetchContent_Declare(imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -68,7 +73,7 @@ if(PAPER_ENABLE_PROFILER)
   FetchContent_MakeAvailable(tracy)
 endif()
 
-FetchContent_MakeAvailable(imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
+FetchContent_MakeAvailable(nlohmann_json imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
 
 enable_testing()
 
