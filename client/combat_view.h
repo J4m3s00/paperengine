@@ -30,6 +30,8 @@ public:
     Paper::MaterialHandle gun;
     Paper::MaterialHandle tracer;
     Paper::MaterialHandle impact;
+    Paper::MaterialHandle teamT;
+    Paper::MaterialHandle teamCT;
   };
 
   // Optional: without it (no sound device) everything is silent.
@@ -54,6 +56,9 @@ public:
   CombatView(Paper::Scene &scene, const Assets &assets) : m_scene(scene) {
     m_gun = makeEntity(assets.cube, assets.gun);
     m_flash = makeEntity(assets.cube, assets.impact);
+    for (std::size_t i = 0; i < m_markers.size(); ++i) {
+      m_markers[i] = {makeEntity(assets.cube, assets.teamT), makeEntity(assets.cube, assets.teamCT)};
+    }
     for (int i = 0; i < kPool; ++i) {
       m_tracers.push_back({makeEntity(assets.cube, assets.tracer), 0.0F});
       m_impacts.push_back({makeEntity(assets.cube, assets.impact), 0.0F});
@@ -98,6 +103,8 @@ public:
     }
 
     updateFootsteps(dt, session);
+    updateMarkers(session);
+    m_banner.age += dt;
     const bool reloading = session.combat().reloading();
     if (reloading && !m_wasReloading && m_audio) {
       m_audio->play2D(m_reloadSound, 0.8F);
@@ -126,8 +133,12 @@ public:
     transform(m_flash).scale = showGun && m_flashLeft > 0.0F ? glm::vec3(3.0F) : glm::vec3(0.0F);
   }
 
-  // Inside the UI callback.
-  void drawHud(const Paper::ClientSession &session) {
+  // Inside the UI callback. `scoreboard`: the scoreboard key is held.
+  void drawHud(const Paper::ClientSession &session, bool scoreboard = false) {
+    drawRoundHud(session);
+    if (scoreboard) {
+      drawScoreboard(session);
+    }
     const ImVec2 size = ImGui::GetIO().DisplaySize;
     ImDrawList *draw = ImGui::GetForegroundDrawList();
     const ImVec2 c(size.x * 0.5F, size.y * 0.5F);
@@ -193,6 +204,12 @@ private:
   struct Timed {
     entt::entity entity;
     float life;
+  };
+  struct Banner {
+    std::string text;
+    ImU32 color = 0;
+    float duration = 0.0F;
+    float age = 1000.0F;
   };
   struct FeedLine {
     std::string text;
@@ -288,6 +305,109 @@ private:
     }
   }
 
+  // Small colored marker over every other player's head: their team.
+  void updateMarkers(const Paper::ClientSession &session) {
+    for (auto &pair : m_markers) {
+      transform(pair.first).scale = glm::vec3(0.0F);
+      transform(pair.second).scale = glm::vec3(0.0F);
+    }
+    for (const Paper::NetPlayer &p : session.remotePlayers()) {
+      if (!p.vitals.alive || p.info.team == Paper::Team::None) {
+        continue;
+      }
+      auto &pair = m_markers[p.slot];
+      const entt::entity e = p.info.team == Paper::Team::T ? pair.first : pair.second;
+      const float top = p.state.ducked ? 54.0F : 72.0F;
+      transform(e).position = p.state.origin + glm::vec3(0.0F, top + 10.0F, 0.0F);
+      transform(e).scale = glm::vec3(5.0F);
+    }
+  }
+
+  static const char *teamName(Paper::Team t) {
+    return t == Paper::Team::T ? "Terrorists" : t == Paper::Team::CT ? "Counter-Terrorists" : "Players";
+  }
+
+  void drawRoundHud(const Paper::ClientSession &session) {
+    const Paper::MatchState &m = session.match();
+    const ImVec2 size = ImGui::GetIO().DisplaySize;
+    ImDrawList *draw = ImGui::GetForegroundDrawList();
+    const float cx = size.x * 0.5F;
+    char buf[96];
+    const int secs = static_cast<int>(std::ceil(session.phaseSecondsLeft()));
+    const char *phase = m.phase == Paper::Phase::Waiting    ? "Waiting for players"
+                        : m.phase == Paper::Phase::Freeze   ? "Freeze"
+                        : m.phase == Paper::Phase::Live     ? ""
+                        : m.phase == Paper::Phase::RoundEnd ? "Round over"
+                                                            : "Match over";
+    std::snprintf(buf, sizeof buf, "T %d   %d:%02d   %d CT", m.scoreT, secs / 60, secs % 60, m.scoreCT);
+    const ImVec2 t = ImGui::GetFont()->CalcTextSizeA(30.0F, FLT_MAX, 0.0F, buf);
+    drawText(draw, ImVec2(cx - t.x * 0.5F, 14.0F), 30.0F, m.phase == Paper::Phase::Waiting ? "" : buf,
+             IM_COL32(255, 255, 255, 240));
+    std::snprintf(buf, sizeof buf, "Round %d  %s", m.round, phase);
+    const ImVec2 t2 = ImGui::GetFont()->CalcTextSizeA(20.0F, FLT_MAX, 0.0F, buf);
+    drawText(draw, ImVec2(cx - t2.x * 0.5F, 48.0F), 20.0F,
+             m.phase == Paper::Phase::Waiting ? phase : buf, IM_COL32(220, 220, 220, 220));
+
+    if (m_banner.age < m_banner.duration) {
+      const ImVec2 b = ImGui::GetFont()->CalcTextSizeA(48.0F, FLT_MAX, 0.0F, m_banner.text.c_str());
+      drawText(draw, ImVec2(cx - b.x * 0.5F, size.y * 0.25F), 48.0F, m_banner.text.c_str(),
+               m_banner.color);
+    }
+  }
+
+  void drawScoreboard(const Paper::ClientSession &session) {
+    std::vector<Paper::NetPlayer> players = session.latestPlayers();
+    std::sort(players.begin(), players.end(), [](const auto &a, const auto &b) {
+      if (a.info.team != b.info.team) return a.info.team > b.info.team;
+      return a.info.kills > b.info.kills;
+    });
+    const ImVec2 size = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(size.x * 0.5F, size.y * 0.4F), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
+    ImGui::SetNextWindowBgAlpha(0.8F);
+    ImGui::Begin("Scoreboard", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs);
+    const Paper::MatchState &m = session.match();
+    ImGui::Text("Round %d   T %d : %d CT", m.round, m.scoreT, m.scoreCT);
+    Paper::Team current = Paper::Team::None;
+    bool open = false;
+    for (const Paper::NetPlayer &p : players) {
+      if (!open || p.info.team != current) {
+        if (open) {
+          ImGui::EndTable();
+        }
+        current = p.info.team;
+        ImGui::Spacing();
+        ImGui::TextColored(current == Paper::Team::T ? ImVec4(1.0F, 0.7F, 0.2F, 1.0F)
+                                                     : ImVec4(0.4F, 0.7F, 1.0F, 1.0F),
+                           "%s", teamName(current));
+        ImGui::BeginTable(teamName(current), 4, ImGuiTableFlags_SizingFixedFit);
+        ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthFixed, 200.0F);
+        ImGui::TableSetupColumn("K", ImGuiTableColumnFlags_WidthFixed, 50.0F);
+        ImGui::TableSetupColumn("D", ImGuiTableColumnFlags_WidthFixed, 50.0F);
+        ImGui::TableSetupColumn("HP", ImGuiTableColumnFlags_WidthFixed, 60.0F);
+        open = true;
+      }
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("%sPlayer %d", p.slot == session.slot() ? "> " : "", p.slot);
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", p.info.kills);
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", p.info.deaths);
+      ImGui::TableNextColumn();
+      if (p.vitals.alive) {
+        ImGui::Text("%d", p.vitals.health);
+      } else {
+        ImGui::TextDisabled("dead");
+      }
+    }
+    if (open) {
+      ImGui::EndTable();
+    }
+    ImGui::End();
+  }
+
   void handle(const Paper::GameEvent &e, const Paper::ClientSession &session) {
     switch (e.type) {
     case Paper::GameEvent::Type::Shot:
@@ -304,9 +424,17 @@ private:
       }
       break;
     case Paper::GameEvent::Type::RoundStart:
+      m_banner = {"Round " + std::to_string(e.actor), IM_COL32(255, 255, 255, 255), 2.0F, 0.0F};
+      break;
     case Paper::GameEvent::Type::RoundEnd:
+      m_banner = {std::string(teamName(static_cast<Paper::Team>(e.actor))) + " win the round",
+                  e.actor == 1 ? IM_COL32(255, 180, 60, 255) : IM_COL32(100, 180, 255, 255), 4.0F,
+                  0.0F};
+      break;
     case Paper::GameEvent::Type::MatchEnd:
-      break; // shown by the round HUD
+      m_banner = {std::string(teamName(static_cast<Paper::Team>(e.actor))) + " win the match!",
+                  IM_COL32(255, 230, 80, 255), 9.0F, 0.0F};
+      break;
     case Paper::GameEvent::Type::Kill: {
       if (e.actor == session.slot()) {
         m_hitMarker = 0.4F;
@@ -324,6 +452,8 @@ private:
   }
 
   Paper::Scene &m_scene;
+  Banner m_banner;
+  std::array<std::pair<entt::entity, entt::entity>, Paper::kMaxPlayerSlots> m_markers;
   Paper::AudioEngine *m_audio = nullptr;
   Paper::SoundId m_rifle = 0, m_pistol = 0, m_sniper = 0, m_knife = 0, m_step = 0;
   Paper::SoundId m_impactSound = 0, m_hitSound = 0, m_reloadSound = 0;

@@ -13,13 +13,15 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace {
 std::atomic<bool> g_running{true};
 void onSignal(int) { g_running = false; }
 
 void usage() {
-  spdlog::info("usage: server [--map file.json] [--port N] [--snapshot-rate N] [--weapons dir] [--moving-bots] [--set cvar value]");
+  spdlog::info("usage: server [--map file.json] [--port N] [--snapshot-rate N] [--weapons dir] [--moving-bots] [--config file.cfg] [--set cvar value]");
 }
 } // namespace
 
@@ -29,6 +31,8 @@ int main(int argc, char **argv) {
   Paper::ServerConfig config;
   std::string weaponsDir = PAPER_WEAPONS_DIR;
   bool movingBots = false;
+  std::string configPath;
+  std::vector<std::pair<std::string, std::string>> overrides;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -41,16 +45,13 @@ int main(int argc, char **argv) {
       config.snapshotRate = static_cast<std::uint16_t>(std::atoi(argv[++i]));
     } else if (arg == "--weapons" && hasValue) {
       weaponsDir = argv[++i];
+    } else if (arg == "--config" && hasValue) {
+      configPath = argv[++i];
     } else if (arg == "--moving-bots") {
       movingBots = true;
     } else if (arg == "--set" && i + 2 < argc) {
-      const std::string name = argv[i + 1];
-      const std::string value = argv[i + 2];
+      overrides.emplace_back(argv[i + 1], argv[i + 2]);
       i += 2;
-      if (auto r = Paper::cvars().set(name, value); !r) {
-        spdlog::error("{}", r.error().message);
-        return 1;
-      }
     } else {
       usage();
       return arg == "--help" ? 0 : 1;
@@ -77,7 +78,26 @@ int main(int argc, char **argv) {
     return 1;
   }
   Paper::MovementCvars movementCvars;
+  Paper::RulesCvars rulesCvars;
+  if (!configPath.empty()) {
+    if (auto r = Paper::cvars().loadFile(configPath); !r) {
+      spdlog::error("{}", r.error().message);
+      return 1;
+    }
+  }
+  for (const auto &[name, value] : overrides) {
+    if (auto r = Paper::cvars().set(name, value); !r) {
+      spdlog::error("{}", r.error().message);
+      return 1;
+    }
+  }
   config.movement = movementCvars.params();
+  config.teamplay = rulesCvars.teamplay();
+  config.rules = rulesCvars.rules();
+  config.friendlyFire = rulesCvars.friendlyFire();
+  config.respawnSeconds = rulesCvars.respawnSeconds();
+  config.spawnsT = Paper::teamSpawnPoints(*map, Paper::Team::T);
+  config.spawnsCT = Paper::teamSpawnPoints(*map, Paper::Team::CT);
   config.spawns = Paper::spawnPoints(*map);
   config.map = std::filesystem::path(mapPath).stem().string();
 

@@ -16,6 +16,7 @@ enum class Key {
   F1,
   R,
   T,
+  Tab,
   Num1,
   Num2,
   Num3,

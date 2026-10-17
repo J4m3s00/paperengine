@@ -220,7 +220,9 @@ int main(int argc, char **argv) {
     combatView = std::make_unique<CombatView>(
         scene, CombatView::Assets{cubeMesh, makeMaterial({0.15F, 0.15F, 0.17F}, glm::vec3(0.0F)),
                                   makeMaterial({0.1F, 0.1F, 0.1F}, {2.5F, 2.0F, 0.8F}),
-                                  makeMaterial({0.1F, 0.1F, 0.1F}, {3.0F, 1.6F, 0.4F})});
+                                  makeMaterial({0.1F, 0.1F, 0.1F}, {3.0F, 1.6F, 0.4F}),
+                                  makeMaterial({0.1F, 0.1F, 0.1F}, {3.0F, 1.8F, 0.3F}),
+                                  makeMaterial({0.1F, 0.1F, 0.1F}, {0.4F, 1.4F, 3.0F})});
     combatView->setAudio(audio.get());
     // Other players are drawn as their hitboxes, one colored box per hit
     // group, so what you see is exactly what you can hit.
@@ -258,7 +260,7 @@ int main(int argc, char **argv) {
     hud.draw(player.state(), viewCamera, collision);
     if (session) {
       netHud.draw(*session, lastFrameSeconds, simulated.latencyMs);
-      combatView->drawHud(*session);
+      combatView->drawHud(*session, window->keyDown(Paper::Key::Tab));
     }
   });
 

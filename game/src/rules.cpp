@@ -1,6 +1,26 @@
 #include "game/rules.h"
 
 namespace Paper {
+RulesCvars::RulesCvars(CvarRegistry &r)
+    : m_teamplay(r.addBool("mp_teamplay", false, "Team elimination rounds (off: free-for-all)")),
+      m_friendlyFire(r.addBool("mp_friendlyfire", false, "Teammates can hurt each other")),
+      m_freeze(r.add<float>("mp_freezetime", 5.0F, 0.0F, 60.0F, "Seconds frozen at round start")),
+      m_round(r.add<float>("mp_roundtime", 115.0F, 10.0F, 600.0F, "Seconds a round lasts")),
+      m_roundEnd(r.add<float>("mp_roundend_time", 5.0F, 0.0F, 30.0F, "Seconds between rounds")),
+      m_matchEnd(r.add<float>("mp_matchend_time", 10.0F, 0.0F, 120.0F, "Seconds the final scoreboard stays")),
+      m_winLimit(r.add<int>("mp_winlimit", 8, 1, 50, "Rounds a team needs to win the match")),
+      m_respawn(r.add<float>("mp_respawn_time", 3.0F, 0.0F, 30.0F, "Seconds until respawn in free play")) {}
+
+RulesConfig RulesCvars::rules() const {
+  RulesConfig c;
+  c.freezeSeconds = m_freeze.value();
+  c.roundSeconds = m_round.value();
+  c.roundEndSeconds = m_roundEnd.value();
+  c.matchEndSeconds = m_matchEnd.value();
+  c.roundsToWin = m_winLimit.value();
+  return c;
+}
+
 void RoundManager::startRound(std::uint32_t tick, RulesEvents &ev) {
   m_phase = Phase::Freeze;
   m_phaseEnd = tick + ticks(m_config.freezeSeconds);

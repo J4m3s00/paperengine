@@ -61,6 +61,8 @@ int toGlfw(Key key) {
     return GLFW_KEY_R;
   case Key::T:
     return GLFW_KEY_T;
+  case Key::Tab:
+    return GLFW_KEY_TAB;
   case Key::Num1:
     return GLFW_KEY_1;
   case Key::Num2:

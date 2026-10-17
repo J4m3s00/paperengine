@@ -1,5 +1,7 @@
 #pragma once
 
+#include "base/cvar.h"
+
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -74,6 +76,28 @@ struct PlayerInfo {
   std::uint8_t kills = 0;
   std::uint8_t deaths = 0;
   bool operator==(const PlayerInfo &) const = default;
+};
+
+// cvars for a team-play server: mp_teamplay, mp_freezetime, mp_roundtime,
+// mp_roundend_time, mp_matchend_time, mp_winlimit, mp_friendlyfire,
+// mp_respawn_time.
+class RulesCvars {
+public:
+  explicit RulesCvars(CvarRegistry &registry = cvars());
+  [[nodiscard]] RulesConfig rules() const;
+  [[nodiscard]] bool teamplay() const { return m_teamplay.value(); }
+  [[nodiscard]] bool friendlyFire() const { return m_friendlyFire.value(); }
+  [[nodiscard]] float respawnSeconds() const { return m_respawn.value(); }
+
+private:
+  Cvar<bool> &m_teamplay;
+  Cvar<bool> &m_friendlyFire;
+  Cvar<float> &m_freeze;
+  Cvar<float> &m_round;
+  Cvar<float> &m_roundEnd;
+  Cvar<float> &m_matchEnd;
+  Cvar<int> &m_winLimit;
+  Cvar<float> &m_respawn;
 };
 
 class RoundManager {
