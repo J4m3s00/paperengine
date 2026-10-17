@@ -259,6 +259,15 @@ void Server::simulate(std::uint8_t slot, Client &client) {
   }
 }
 
+void Server::kickAll(const std::string &reason) {
+  for (auto &c : m_clients) {
+    if (c && !c->isBot) {
+      m_transport.send(c->peer, Channel::Reliable, encode(RejectMsg{reason}));
+      m_transport.disconnect(c->peer);
+    }
+  }
+}
+
 void Server::sendEvent(std::uint8_t slot, const GameEvent &event) {
   if (m_clients[slot] && !m_clients[slot]->isBot) {
     m_transport.send(m_clients[slot]->peer, Channel::Reliable, encode(event));
@@ -403,6 +412,7 @@ void Server::runRules() {
   const RulesEvents ev = m_rules.tick(m_tick, counts);
   const auto team = [](std::optional<Team> t) { return static_cast<std::uint8_t>(t.value_or(Team::None)); };
   if (ev.newMatch) {
+    m_matchRestarted = true;
     for (auto &c : m_clients) {
       if (c) {
         c->info.kills = 0;

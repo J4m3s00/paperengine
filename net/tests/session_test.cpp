@@ -492,6 +492,19 @@ TEST_CASE("killing the other team wins rounds and the match, stats are kept") {
   rig.run(128 * 6, idle);
   CHECK(rig.server.matchState().scoreT == 0);
   CHECK(rig.server.info(0)->kills == 0);
+  CHECK(rig.server.takeMatchRestarted());
+  CHECK_FALSE(rig.server.takeMatchRestarted()); // only reported once
+}
+
+TEST_CASE("kickAll sends everyone away with a reason") {
+  Rig rig;
+  auto &a = rig.addClient();
+  rig.run(30, idle);
+  REQUIRE(a.playing());
+  rig.server.kickAll("map change");
+  rig.run(10, idle);
+  CHECK(a.status() == ClientSession::Status::Rejected);
+  CHECK(a.rejectReason() == "map change");
 }
 
 TEST_CASE("dead players stay dead during a live round and return with the next round") {

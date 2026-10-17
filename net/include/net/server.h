@@ -16,6 +16,7 @@
 #include <deque>
 #include <functional>
 #include <optional>
+#include <utility>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -88,6 +89,10 @@ public:
   int addBot(const SpawnPoint &spawn, bool moving = false);
 
   void setVisibility(VisibilityFn fn) { m_visibility = std::move(fn); }
+  // Tells every player to leave (they get `reason`), e.g. before a map change.
+  void kickAll(const std::string &reason);
+  // True once after a finished match started over (the time to rotate maps).
+  [[nodiscard]] bool takeMatchRestarted() { return std::exchange(m_matchRestarted, false); }
   // Handles incoming packets, runs one simulation tick, sends due snapshots.
   void tick();
 
@@ -162,6 +167,7 @@ private:
   std::array<std::optional<Client>, kMaxPlayerSlots> m_clients;
   std::unordered_map<PeerId, std::uint8_t> m_slotOfPeer;
   std::uint32_t m_tick = 0;
+  bool m_matchRestarted = false;
   ServerStats m_stats;
 };
 } // namespace Paper
