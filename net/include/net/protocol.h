@@ -71,6 +71,8 @@ struct Snapshot {
   std::uint32_t tick = 0;
   // Last usercmd sequence of the recipient the server has executed.
   std::uint32_t ackedCmd = 0;
+  // Usercmds the server has queued for the recipient (clock sync input).
+  std::uint8_t cmdQueue = 0;
   // Ascending by slot. Only what this recipient may see.
   std::vector<NetPlayer> players;
 };

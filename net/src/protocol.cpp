@@ -221,6 +221,7 @@ std::vector<std::uint8_t> encode(const Snapshot &snapshot, const Snapshot *basel
   w.write(snapshot.tick, 32);
   w.write(baseline ? baseline->tick : 0U, 32);
   w.write(snapshot.ackedCmd, 32);
+  w.write(snapshot.cmdQueue, 5);
   w.write(static_cast<std::uint32_t>(snapshot.players.size()), 5);
   for (const NetPlayer &p : snapshot.players) {
     w.write(p.slot, 5);
@@ -311,6 +312,7 @@ std::expected<Snapshot, Error> decodeSnapshot(std::span<const std::uint8_t> pack
   s.tick = r.read(32);
   const std::uint32_t baselineTick = r.read(32);
   s.ackedCmd = r.read(32);
+  s.cmdQueue = static_cast<std::uint8_t>(r.read(5));
   const std::uint32_t count = r.read(5);
   if (!typeOk || !r.ok()) {
     return std::unexpected(bad("snapshot header"));
