@@ -5,6 +5,7 @@
 #include "movement_hud.h"
 #include "net_hud.h"
 #include "mapview/material_palette.h"
+#include "mapview/prop_models.h"
 #include "mapview/world_mesh.h"
 
 #include "base/cvar.h"
@@ -167,10 +168,11 @@ int main(int argc, char **argv) {
   };
 
   // Maps come and go: loading replaces the previous one.
+  PropModels propModels(*renderer, scene, shader);
   World world;
   const auto unloadWorld = [&] {
     for (const auto e : world.entities) {
-      scene.registry().destroy(e);
+      scene.destroyTree(e);
     }
     for (const auto material : world.materials) {
       renderer->destroyMaterial(material);
@@ -203,6 +205,9 @@ int main(int argc, char **argv) {
     world.collision = std::make_unique<Paper::CollisionWorld>(std::move(*collision));
     world.name = path.stem().string();
     for (const MapMesh &part : buildMapMeshes(world.map)) {
+      if (part.material == Paper::kCollisionMaterial) {
+        continue; // solid but invisible (it hides a prop's collision box)
+      }
       const auto mesh = require(renderer->createMesh(part.mesh));
       const auto material = makeMaterial(colorFor(part.material), glm::vec3(0.0F), 0.9F, true,
                                          world.materials);
@@ -210,6 +215,13 @@ int main(int argc, char **argv) {
       scene.registry().emplace<Paper::MeshRenderer>(entity, mesh, material);
       world.meshes.push_back(mesh);
       world.entities.push_back(entity);
+    }
+    for (const Paper::MapProp &prop : world.map.props) {
+      if (const entt::entity e = propModels.spawn(prop); e != entt::null) {
+        world.entities.push_back(e);
+      } else {
+        spdlog::warn("map prop '{}' is not in the environment kit", prop.model);
+      }
     }
     world.spawnOrigin = glm::vec3(0.0F, 2.0F, 0.0F);
     world.spawnYaw = 0.0F;
@@ -225,6 +237,7 @@ int main(int argc, char **argv) {
 
   const Paper::WeaponDb weapons = require(Paper::WeaponDb::loadDirectory(Paper::dataDir("weapons", PAPER_WEAPONS_DIR)));
   Paper::MovementCvars movementCvars;
+  auto &vsyncCvar = Paper::cvars().addBool("r_vsync", true, "Wait for the display (off: highest frame rate)");
   Paper::DebugOverlay overlay;
   overlay.setVisible(screenshotPath != nullptr && !noOverlay);
   float lastFrameSeconds = 0.0F;
@@ -521,8 +534,17 @@ int main(int argc, char **argv) {
   bool rHeld = false;
   int frame = 0;
   int shotFrame = -1;
+  const int benchFrames = std::getenv("PAPER_BENCH_FRAMES") ? std::atoi(std::getenv("PAPER_BENCH_FRAMES")) : 0;
+  int benchCounted = 0;
+  double benchRender = 0.0;
+  double benchUpdate = 0.0;
+  double benchWorst = 0.0;
   double lastTime = window->time();
   while (!window->shouldClose() && !wantQuit) {
+    const auto frameStart = std::chrono::steady_clock::now();
+    if (vsyncCvar.value() != renderer->vsync()) {
+      renderer->setVSync(vsyncCvar.value());
+    }
     window->update();
     ++frame;
     if (screenshotPath != nullptr) {
@@ -644,10 +666,26 @@ int main(int argc, char **argv) {
         }
       }
     }
+    const auto renderStart = std::chrono::steady_clock::now();
     Paper::TransformSystem::update(scene);
     viewCamera = player.camera(camera);
     require(renderer->render(scene, viewCamera));
     PAPER_FRAME_MARK();
+    if (benchFrames > 0 && session && session->stats().snapshotsReceived > 60) {
+      // PAPER_BENCH_FRAMES=N: report the CPU time of the frame (animation,
+      // transforms, render submission) over N frames, then quit. The GPU time
+      // is not part of this and vsync hides the frame rate.
+      const auto end = std::chrono::steady_clock::now();
+      benchRender += std::chrono::duration<double, std::milli>(end - renderStart).count();
+      benchUpdate += std::chrono::duration<double, std::milli>(renderStart - frameStart).count();
+      benchWorst = std::max(benchWorst, std::chrono::duration<double, std::milli>(end - frameStart).count());
+      if (++benchCounted >= benchFrames) {
+        spdlog::info("bench: {} frames, CPU per frame: {:.3f} ms update (incl. animation of {} players) + {:.3f} ms transforms/render, worst frame {:.2f} ms",
+                     benchCounted, benchUpdate / benchCounted, session->remotePlayers().size(),
+                     benchRender / benchCounted, benchWorst);
+        window->requestClose();
+      }
+    }
   }
 
   if (recordPath != nullptr) {

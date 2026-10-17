@@ -47,7 +47,9 @@ std::expected<void, Error> Swapchain::build(int width, int height) {
       builder
           .set_desired_format({VK_FORMAT_B8G8R8A8_SRGB,
                                VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
-          .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
+          .set_desired_present_mode(m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR)
+          .add_fallback_present_mode(VK_PRESENT_MODE_IMMEDIATE_KHR)
+          .add_fallback_present_mode(VK_PRESENT_MODE_FIFO_KHR)
           .set_desired_extent(static_cast<std::uint32_t>(width),
                               static_cast<std::uint32_t>(height))
           .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT |

@@ -24,6 +24,9 @@ public:
   // outlive the entities.
   entt::entity instantiate(const Model &model);
 
+  // Destroys `entity` and everything below it in the hierarchy.
+  void destroyTree(entt::entity entity);
+
   // The skinned meshes of `model` as entities under one new root (the nodes'
   // own transforms are ignored, as glTF specifies for skinned meshes). Each
   // mesh entity gets an empty SkinPose to fill every frame; the Model's

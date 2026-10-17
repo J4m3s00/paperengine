@@ -253,3 +253,24 @@ TEST_CASE("the map checksum follows the collision, not the bookkeeping") {
     CHECK(mapChecksum(*m) == mapChecksum(*parseMap(serializeMap(*m))));
   }
 }
+
+TEST_CASE("props load, save and do not change the collision checksum") {
+  const auto with = parseMap(R"({"version":1,"brushes":[{"box":[0,0,0,10,10,10],"material":"collision"}],
+    "props":[{"model":"wall","origin":[1,2,3],"yaw":90,"scale":2},{"model":"pillar","origin":[0,0,0]}]})");
+  REQUIRE(with.has_value());
+  REQUIRE(with->props.size() == 2);
+  CHECK(with->props[0].model == "wall");
+  CHECK(with->props[0].yaw == doctest::Approx(glm::half_pi<float>()));
+  CHECK(with->props[0].scale == 2.0F);
+  CHECK(with->props[1].scale == 1.0F);
+  const auto again = parseMap(serializeMap(*with));
+  REQUIRE(again.has_value());
+  REQUIRE(again->props.size() == 2);
+  CHECK(again->props[0].origin == vec3(1, 2, 3));
+  const auto without = parseMap(R"({"version":1,"brushes":[{"box":[0,0,0,10,10,10]}]})");
+  CHECK(mapChecksum(*with) == mapChecksum(*without));
+  // A map without props writes no props key at all.
+  CHECK(serializeMap(*without).find("props") == std::string::npos);
+  CHECK_FALSE(parseMap(R"({"version":1,"props":[{"model":"","origin":[0,0,0]}]})").has_value());
+  CHECK_FALSE(parseMap(R"({"version":1,"props":[{"model":"x","origin":[0,0,0],"scale":0}]})").has_value());
+}

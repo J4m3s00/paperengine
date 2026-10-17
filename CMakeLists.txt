@@ -124,6 +124,20 @@ add_subdirectory(bots)
 # Paper::dataDir and the renderer look for them.
 install(TARGETS client server RUNTIME DESTINATION . COMPONENT game)
 install(DIRECTORY maps weapons DESTINATION . COMPONENT game)
+# Art actually used by the game (CC0 packs; see assets/*/License.txt).
+install(FILES "assets/Universal Animation Library[Standard]/Unreal-Godot/UAL1_Standard.glb"
+        DESTINATION "assets/Universal Animation Library[Standard]/Unreal-Godot" COMPONENT game)
+install(FILES "assets/Universal Animation Library[Standard]/License.txt"
+        DESTINATION "assets/Universal Animation Library[Standard]" COMPONENT game)
+install(DIRECTORY "assets/Styloo Guns Asset Pack GLTF FBX V1.1/Normal version Color and NormalMap/GLB"
+        DESTINATION "assets/Styloo Guns Asset Pack GLTF FBX V1.1/Normal version Color and NormalMap"
+        COMPONENT game FILES_MATCHING PATTERN "*.glb")
+install(DIRECTORY "assets/Free 3D Modular Game Assets For Prototyping/Pieces"
+        DESTINATION "assets/Free 3D Modular Game Assets For Prototyping" COMPONENT game
+        FILES_MATCHING PATTERN "*.fbx")
+install(FILES "assets/Free 3D Modular Game Assets For Prototyping/texture.png"
+              "assets/Free 3D Modular Game Assets For Prototyping/License.txt"
+        DESTINATION "assets/Free 3D Modular Game Assets For Prototyping" COMPONENT game)
 install(DIRECTORY ${CMAKE_BINARY_DIR}/shaders DESTINATION . COMPONENT game FILES_MATCHING PATTERN "*.spv")
 install(FILES server.cfg packaging/README.txt DESTINATION . COMPONENT game)
 

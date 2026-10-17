@@ -1705,6 +1705,18 @@ void Renderer::destroyModel(ModelHandle model) {
   }
 }
 
+void Renderer::setVSync(bool vsync) {
+  if (m_pImpl->swapchain->vsync() == vsync) {
+    return;
+  }
+  m_pImpl->swapchain->setVSync(vsync);
+  if (auto r = m_pImpl->recreateSwapchain(); !r) {
+    spdlog::error("changing vsync failed: {}", r.error().message);
+  }
+}
+
+bool Renderer::vsync() const { return m_pImpl->swapchain->vsync(); }
+
 void Renderer::setUiCallback(std::function<void()> callback) {
   m_pImpl->uiCallback = std::move(callback);
 }

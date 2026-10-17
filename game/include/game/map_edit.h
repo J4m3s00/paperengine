@@ -3,6 +3,7 @@
 #include "game/map.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
@@ -13,7 +14,7 @@
 // no rendering, so it is testable headless.
 namespace Paper {
 struct Selection {
-  enum class Type { None, Brush, Entity };
+  enum class Type { None, Brush, Entity, Prop };
   Type type = Type::None;
   int index = -1;
 
@@ -34,6 +35,13 @@ struct MapIssue {
 // Entity types the game knows about.
 inline constexpr const char *kEntityTypes[] = {"spawn", "spawn_t", "spawn_ct", "bot"};
 
+// Meters per Source unit: the environment kit is modeled in meters.
+inline constexpr float kUnitsPerMeter = 39.3701F;
+
+// The bounds of a prop model in its own space (meters), if it is known.
+using PropExtentsFn =
+    std::function<std::optional<std::pair<glm::vec3, glm::vec3>>(const std::string &model)>;
+
 class MapEditor {
 public:
   explicit MapEditor(MapData map = {});
@@ -41,6 +49,8 @@ public:
   [[nodiscard]] const MapData &map() const { return m_map; }
   // Replaces the whole map (a fresh start: no undo history, nothing selected).
   void load(MapData map);
+  // Tells the editor how big prop models are (it has no renderer).
+  void setPropExtents(PropExtentsFn fn) { m_propExtents = std::move(fn); }
   [[nodiscard]] bool dirty() const { return m_dirty; }
   void markSaved() { m_dirty = false; }
   // Changes with every edit, undo, redo and load (cheap "did the map change?").
@@ -56,6 +66,11 @@ public:
   int addBox(const glm::vec3 &mins, const glm::vec3 &maxs, std::string material = "box");
   int addRamp(const RampDef &ramp, std::string material = "ramp");
   int addEntity(std::string type, const glm::vec3 &origin, float yaw = 0.0F);
+  int addProp(std::string model, const glm::vec3 &origin, float yaw = 0.0F, float scale = 1.0F);
+  void setProp(int prop, std::string model, const glm::vec3 &origin, float yaw, float scale);
+  // Adds a box brush (material "collision") around the prop, so players
+  // bump into it. Returns the brush index, or -1 if the size is unknown.
+  int addPropCollision(int prop);
   void remove(Selection s);
   // Copies the selected brush or entity, shifted by `offset`, and selects the copy.
   Selection duplicate(Selection s, const glm::vec3 &offset);
@@ -92,6 +107,7 @@ private:
   [[nodiscard]] bool exists(Selection s) const;
 
   MapData m_map;
+  PropExtentsFn m_propExtents;
   Selection m_selection;
   std::vector<Snapshot> m_undo;
   std::vector<Snapshot> m_redo;

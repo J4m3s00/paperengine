@@ -8,6 +8,7 @@
 // drop, Esc to cancel); arrows and PageUp/PageDown nudge by the grid size;
 // Delete removes; Ctrl+Z / Ctrl+Y undo and redo; Ctrl+S saves.
 #include "mapview/material_palette.h"
+#include "mapview/prop_models.h"
 #include "mapview/world_mesh.h"
 
 #include "base/paths.h"
@@ -25,6 +26,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -60,6 +63,8 @@ class EditorApp {
 public:
   EditorApp(Window &window, Renderer &renderer) : m_window(window), m_renderer(renderer) {
     m_shader = require(m_renderer.createShader({"pbr.vert.spv", "pbr.frag.spv"}));
+    m_props = std::make_unique<PropModels>(m_renderer, m_scene, m_shader);
+    m_editor.setPropExtents([this](const std::string &name) { return m_props->extents(name); });
     m_grid = require(m_renderer.createTexture(makeGrid(256, 4), ColorSpace::Srgb));
     m_scene.ambientLight = glm::vec3(0.25F, 0.26F, 0.3F);
     const auto sun = m_scene.createEntity();
@@ -81,6 +86,7 @@ public:
 
   ~EditorApp() {
     clearScene();
+    m_props.reset();
     m_renderer.destroyMaterial(m_highlight);
     for (const auto m : m_materials) {
       m_renderer.destroyMaterial(m.second);
@@ -169,7 +175,7 @@ private:
 
   void clearScene() {
     for (const auto e : m_entities) {
-      m_scene.registry().destroy(e);
+      m_scene.destroyTree(e);
     }
     for (const auto m : m_sceneMaterials) {
       m_renderer.destroyMaterial(m);
@@ -202,6 +208,26 @@ private:
     t.rotation = rotation;
     t.scale = scale;
     m_entities.push_back(e);
+  }
+
+  // A wireframe box (12 thin bars) around [lo, hi].
+  void addOutline(const glm::vec3 &lo, const glm::vec3 &hi) {
+    constexpr float kBar = 1.5F;
+    const glm::vec3 size = hi - lo;
+    for (int axis = 0; axis < 3; ++axis) {
+      for (int corner = 0; corner < 4; ++corner) {
+        glm::vec3 at = lo;
+        const int a = (axis + 1) % 3;
+        const int b = (axis + 2) % 3;
+        if ((corner & 1) != 0) at[a] += size[a];
+        if ((corner & 2) != 0) at[b] += size[b];
+        glm::vec3 center = at;
+        center[axis] += size[axis] * 0.5F;
+        glm::vec3 scale(kBar);
+        scale[axis] = size[axis];
+        addBox(center, glm::quat(1, 0, 0, 0), scale, m_highlight);
+      }
+    }
   }
 
   // Rebuilds everything shown: brushes per material, the selected brush in
@@ -237,6 +263,17 @@ private:
       // A nub shows which way it faces (yaw 0 looks along -Z).
       addBox(e.origin + glm::vec3(0, 26, 0) + yaw * glm::vec3(0, 0, -20), yaw, {8.0F, 8.0F, 24.0F},
              material);
+    }
+    // Props: the real models; a selected one gets an outline.
+    for (std::size_t i = 0; i < map.props.size(); ++i) {
+      if (const entt::entity e = m_props->spawn(map.props[i]); e != entt::null) {
+        m_entities.push_back(e);
+      }
+    }
+    if (sel.type == Selection::Type::Prop) {
+      if (const auto b = m_editor.bounds(sel)) {
+        addOutline(b->first, b->second);
+      }
     }
     m_builtRevision = m_editor.revision();
     m_builtSelection = sel;
@@ -604,7 +641,32 @@ private:
         if (ImGui::Selectable(label, selected)) m_editor.select({Selection::Type::Entity, static_cast<int>(i)});
       }
     }
+    if (ImGui::CollapsingHeader("Props", ImGuiTreeNodeFlags_DefaultOpen)) {
+      for (std::size_t i = 0; i < map.props.size(); ++i) {
+        char label[96];
+        std::snprintf(label, sizeof label, "%zu  %s", i, map.props[i].model.c_str());
+        const bool selected = sel.type == Selection::Type::Prop && sel.index == static_cast<int>(i);
+        if (ImGui::Selectable(label, selected)) m_editor.select({Selection::Type::Prop, static_cast<int>(i)});
+      }
+    }
     m_scrollToSelection = false;
+    ImGui::End();
+  }
+
+  // The kit's pieces: click one to place it where the camera looks.
+  void drawCatalog() {
+    ImGui::SetNextWindowPos(ImVec2(10, 780), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 220), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Prop kit");
+    ImGui::InputText("filter", m_propFilter, sizeof m_propFilter);
+    ImGui::BeginChild("pieces");
+    for (const std::string &name : m_props->catalog()) {
+      if (m_propFilter[0] != '\0' && name.find(m_propFilter) == std::string::npos) continue;
+      if (ImGui::Selectable(name.c_str())) {
+        m_editor.addProp(name, spawnPoint());
+      }
+    }
+    ImGui::EndChild();
     ImGui::End();
   }
 
@@ -662,6 +724,34 @@ private:
       }
       if (ImGui::Button("Duplicate")) m_editor.duplicate(sel, {m_gridSize * 2, 0, m_gridSize * 2});
       ImGui::SameLine();
+      if (ImGui::Button("Delete")) m_editor.remove(sel);
+      ImGui::SameLine();
+      if (ImGui::Button("Focus")) focus(sel);
+    } else if (sel.type == Selection::Type::Prop) {
+      MapProp p = map.props[static_cast<std::size_t>(sel.index)];
+      ImGui::Text("Prop %d", sel.index);
+      std::string model = p.model;
+      if (ImGui::BeginCombo("model", model.c_str())) {
+        for (const std::string &name : m_props->catalog()) {
+          if (ImGui::Selectable(name.c_str(), model == name)) model = name;
+        }
+        ImGui::EndCombo();
+      }
+      bool changed = model != p.model;
+      changed = dragVec3("origin", p.origin, m_gridSize * 0.25F) || changed;
+      float degrees = glm::degrees(p.yaw);
+      if (ImGui::SliderFloat("yaw", &degrees, -180.0F, 180.0F, "%.0f deg")) {
+        p.yaw = glm::radians(degrees);
+        changed = true;
+      }
+      trackEditGroup();
+      changed = dragFloat("scale", p.scale, 0.01F) || changed;
+      if (changed) m_editor.setProp(sel.index, model, p.origin, p.yaw, p.scale);
+      if (ImGui::Button("Add collision box")) {
+        if (m_editor.addPropCollision(sel.index) < 0) m_status = "Unknown model: no collision box";
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Duplicate")) m_editor.duplicate(sel, {m_gridSize * 2, 0, m_gridSize * 2});
       if (ImGui::Button("Delete")) m_editor.remove(sel);
       ImGui::SameLine();
       if (ImGui::Button("Focus")) focus(sel);
@@ -728,6 +818,7 @@ private:
   void drawUi() {
     drawMenu();
     drawOutliner();
+    drawCatalog();
     drawProperties();
     drawIssues();
     drawDialogs();
@@ -750,6 +841,8 @@ private:
   std::vector<entt::entity> m_entities;
   std::vector<MaterialHandle> m_sceneMaterials;
   std::vector<MeshHandle> m_sceneMeshes;
+  std::unique_ptr<PropModels> m_props;
+  char m_propFilter[64] = {};
   std::uint64_t m_builtRevision = ~0ULL;
   Selection m_builtSelection{Selection::Type::Brush, -2};
 

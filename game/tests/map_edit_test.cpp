@@ -2,6 +2,8 @@
 
 #include "game/map_edit.h"
 
+#include <glm/gtc/constants.hpp>
+
 using namespace Paper;
 using glm::vec3;
 
@@ -214,4 +216,75 @@ TEST_CASE("an edited map round-trips through the file format and plays the same"
     const auto tb = b->traceRay({x, 300, 150}, {x, -100, 150});
     CHECK(ta.fraction == tb.fraction);
   }
+}
+
+namespace {
+// A kit with one piece: a 4 x 2 x 1 m wall (model space bounds are offset on purpose).
+MapEditor propEditor() {
+  MapEditor ed;
+  ed.setPropExtents([](const std::string &model) -> std::optional<std::pair<vec3, vec3>> {
+    if (model == "wall") return std::pair{vec3(11, 0, -18), vec3(15, 2, -17)};
+    return std::nullopt;
+  });
+  return ed;
+}
+} // namespace
+
+TEST_CASE("props can be added, moved, picked and removed") {
+  MapEditor ed = propEditor();
+  const int p = ed.addProp("wall", {100, 0, 0}, 0.0F);
+  CHECK(ed.selection() == Selection{Selection::Type::Prop, p});
+  ed.move({Selection::Type::Prop, p}, {10, 0, 0});
+  CHECK(ed.map().props[0].origin == vec3(110, 0, 0));
+  // 4 x 2 x 1 m = 157 x 79 x 39 units, base centered on the origin.
+  const auto b = ed.bounds({Selection::Type::Prop, p});
+  REQUIRE(b.has_value());
+  CHECK(b->second.x - b->first.x == doctest::Approx(4.0F * kUnitsPerMeter));
+  CHECK(b->second.y == doctest::Approx(2.0F * kUnitsPerMeter));
+  CHECK(b->first.x == doctest::Approx(110.0F - 2.0F * kUnitsPerMeter));
+  const auto hit = ed.pick({110, 30, 500}, {0, 0, -1}, 2000.0F);
+  REQUIRE(hit.has_value());
+  CHECK(hit->what == Selection{Selection::Type::Prop, p});
+  CHECK_FALSE(ed.pick({110, 300, 500}, {0, 0, -1}, 2000.0F).has_value());
+  const Selection copy = ed.duplicate({Selection::Type::Prop, p}, {0, 0, 200});
+  CHECK(copy == Selection{Selection::Type::Prop, 1});
+  CHECK(ed.map().props[1].origin == vec3(110, 0, 200));
+  ed.remove(copy);
+  CHECK(ed.map().props.size() == 1);
+  ed.undo();
+  CHECK(ed.map().props.size() == 2);
+}
+
+TEST_CASE("turning a prop swaps its footprint, collision follows the box") {
+  MapEditor ed = propEditor();
+  const int p = ed.addProp("wall", {0, 0, 0}, glm::half_pi<float>());
+  const auto b = ed.bounds({Selection::Type::Prop, p});
+  CHECK(b->second.x - b->first.x == doctest::Approx(1.0F * kUnitsPerMeter).epsilon(1e-3));
+  CHECK(b->second.z - b->first.z == doctest::Approx(4.0F * kUnitsPerMeter).epsilon(1e-3));
+  const int brush = ed.addPropCollision(p);
+  REQUIRE(brush >= 0);
+  const MapBrush &box = ed.map().brushes[static_cast<std::size_t>(brush)];
+  CHECK(box.material == kCollisionMaterial);
+  CHECK(box.maxs.y == doctest::Approx(2.0F * kUnitsPerMeter));
+  // Solid now: a ray along z hits the collision brush.
+  const auto world = ed.map().buildCollision();
+  REQUIRE(world.has_value());
+  CHECK(world->traceRay({0, 20, 400}, {0, 20, -400}).fraction < 1.0F);
+  CHECK(ed.addPropCollision(99) == -1);
+}
+
+TEST_CASE("props with unknown models are flagged and cannot get collision") {
+  MapEditor ed = propEditor();
+  ed.addProp("mystery", {0, 0, 0});
+  CHECK(ed.addPropCollision(0) == -1);
+  bool flagged = false;
+  for (const MapIssue &i : ed.validate()) {
+    flagged = flagged || i.text.find("unknown model") != std::string::npos;
+  }
+  CHECK(flagged);
+  ed.setProp(0, "wall", {5, 0, 5}, 0.0F, 2.0F);
+  CHECK(ed.map().props[0].model == "wall");
+  CHECK(ed.map().props[0].scale == 2.0F);
+  ed.setProp(0, "", {5, 0, 5}, 0.0F, 2.0F); // invalid: ignored
+  CHECK(ed.map().props[0].model == "wall");
 }

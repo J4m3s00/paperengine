@@ -33,7 +33,7 @@ inline glm::vec3 colorFor(const std::string &material) {
       {"stairs", {0.7F, 0.6F, 0.4F}},    {"platform", {0.6F, 0.35F, 0.35F}},
       {"ramp", {0.3F, 0.5F, 0.75F}},     {"surf", {0.2F, 0.75F, 0.55F}},
       {"box", {0.85F, 0.65F, 0.2F}},     {"pit", {0.2F, 0.2F, 0.25F}},
-      {"ceiling", {0.5F, 0.4F, 0.6F}},   {"pillar", {0.8F, 0.4F, 0.2F}}};
+      {"ceiling", {0.5F, 0.4F, 0.6F}}, {"collision", {0.9F, 0.2F, 0.7F}},   {"pillar", {0.8F, 0.4F, 0.2F}}};
   const auto it = palette.find(material);
   return it != palette.end() ? it->second : glm::vec3(0.6F);
 }

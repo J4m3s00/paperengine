@@ -58,6 +58,21 @@ Scene::SkinnedInstance Scene::instantiateSkinned(const Model &model) {
   return instance;
 }
 
+void Scene::destroyTree(entt::entity entity) {
+  if (!m_registry.valid(entity)) {
+    return;
+  }
+  entt::entity child = m_registry.get<Relationship>(entity).firstChild;
+  while (child != entt::null) {
+    const entt::entity next = m_registry.get<Relationship>(child).nextSibling;
+    destroyTree(child);
+    child = next;
+  }
+  // Unlink from the parent so its child list stays valid.
+  setParent(entity, entt::null);
+  m_registry.destroy(entity);
+}
+
 void Scene::setParent(entt::entity child, entt::entity parent) {
   assert(child != parent);
 #ifndef NDEBUG

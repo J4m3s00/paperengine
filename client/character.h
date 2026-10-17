@@ -1,6 +1,6 @@
 #pragma once
 
-#include "asset_paths.h"
+#include "mapview/asset_paths.h"
 #include "weapon_models.h"
 
 #include "anim/animator.h"

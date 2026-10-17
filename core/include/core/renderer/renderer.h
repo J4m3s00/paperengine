@@ -125,6 +125,12 @@ public:
   // Registers a function that builds a Dear ImGui UI. render() calls it once
   // per frame (between ImGui::NewFrame and ImGui::Render) and draws the result
   // on top of the scene. Pass an empty function to disable the UI.
+  // Vsync on (default) waits for the display; off presents frames as fast as
+  // the GPU allows (needed for 240 FPS play and for measuring). Not for use
+  // from inside the UI callback.
+  void setVSync(bool vsync);
+  [[nodiscard]] bool vsync() const;
+
   void setUiCallback(std::function<void()> callback);
   // True while ImGui wants the mouse (cursor over a widget) or keyboard (text
   // field active); the application should then ignore that input.

@@ -56,10 +56,27 @@ struct MapEntity {
   float yaw = 0.0F;
 };
 
+// A decorative 3D model placed in the level (render only: collision comes from
+// brushes, e.g. a "collision" box the editor adds next to the prop). `model`
+// names a piece of the environment kit; the object stands with the middle of
+// its base at `origin`.
+struct MapProp {
+  std::string model;
+  glm::vec3 origin{0.0F};
+  // Radians, same convention as UserCmd::yaw.
+  float yaw = 0.0F;
+  // Multiplier on the model's real-world size (1 = as authored, in meters).
+  float scale = 1.0F;
+};
+
+// Brushes with this material take part in collision but are not drawn.
+inline constexpr const char *kCollisionMaterial = "collision";
+
 // A level as authored: brushes plus entities. Units are Source units, Y up.
 struct MapData {
   std::vector<MapBrush> brushes;
   std::vector<MapEntity> entities;
+  std::vector<MapProp> props;
 
   [[nodiscard]] std::vector<BrushDesc> brushDescs() const;
   [[nodiscard]] std::expected<CollisionWorld, Error> buildCollision() const;
@@ -72,7 +89,8 @@ struct MapData {
 //                  { "ramp": { "min": [x, z], "max": [x, z], "low": y, "high": y,
 //                              "rising": "+x"|"-x"|"+z"|"-z", "bottom": y } },
 //                  { "planes": [[nx, ny, nz, dist], ...] } ],   // + optional "material"
-//     "entities": [ { "type": "spawn", "origin": [x, y, z], "yaw": degrees } ] }
+//     "entities": [ { "type": "spawn", "origin": [x, y, z], "yaw": degrees } ],
+//     "props": [ { "model": "wall", "origin": [x, y, z], "yaw": degrees, "scale": 1 } ] }
 [[nodiscard]] std::expected<MapData, Error> parseMap(std::string_view json);
 [[nodiscard]] std::expected<MapData, Error> loadMap(const std::filesystem::path &path);
 

@@ -74,9 +74,32 @@ bool MapEditor::exists(Selection s) const {
   if (!s.valid()) {
     return false;
   }
-  const std::size_t n = s.type == Selection::Type::Brush ? m_map.brushes.size() : m_map.entities.size();
+  const std::size_t n = s.type == Selection::Type::Brush    ? m_map.brushes.size()
+                        : s.type == Selection::Type::Entity ? m_map.entities.size()
+                                                            : m_map.props.size();
   return static_cast<std::size_t>(s.index) < n;
 }
+
+namespace {
+// World-space box of a prop: its model's bounds scaled to units, the base
+// centered on `origin`, turned by yaw (the result is the box around that).
+std::optional<std::pair<glm::vec3, glm::vec3>>
+propBox(const MapProp &p, const PropExtentsFn &extents) {
+  glm::vec3 size(1.0F);
+  if (extents) {
+    if (const auto e = extents(p.model)) {
+      size = e->second - e->first;
+    } else {
+      return std::nullopt;
+    }
+  }
+  size *= kUnitsPerMeter * p.scale;
+  const float c = std::fabs(std::cos(p.yaw));
+  const float s = std::fabs(std::sin(p.yaw));
+  const glm::vec3 half(0.5F * (size.x * c + size.z * s), 0.0F, 0.5F * (size.x * s + size.z * c));
+  return std::pair{p.origin - half, p.origin + half + glm::vec3(0.0F, size.y, 0.0F)};
+}
+} // namespace
 
 void MapEditor::select(Selection s) { m_selection = exists(s) ? s : Selection{}; }
 
@@ -122,6 +145,42 @@ int MapEditor::addRamp(const RampDef &ramp, std::string material) {
   return m_selection.index;
 }
 
+int MapEditor::addProp(std::string model, const glm::vec3 &origin, float yaw, float scale) {
+  record();
+  touch();
+  m_map.props.push_back({std::move(model), origin, yaw, scale});
+  m_selection = {Selection::Type::Prop, static_cast<int>(m_map.props.size()) - 1};
+  return m_selection.index;
+}
+
+void MapEditor::setProp(int prop, std::string model, const glm::vec3 &origin, float yaw, float scale) {
+  if (!exists({Selection::Type::Prop, prop}) || !(scale > 0.0F) || model.empty()) {
+    return;
+  }
+  MapProp &p = m_map.props[static_cast<std::size_t>(prop)];
+  if (p.model == model && p.origin == origin && p.yaw == yaw && p.scale == scale) {
+    return;
+  }
+  record();
+  touch();
+  p = {std::move(model), origin, yaw, scale};
+}
+
+int MapEditor::addPropCollision(int prop) {
+  if (!exists({Selection::Type::Prop, prop})) {
+    return -1;
+  }
+  const auto box = propBox(m_map.props[static_cast<std::size_t>(prop)], m_propExtents);
+  if (!box) {
+    return -1;
+  }
+  record();
+  touch();
+  m_map.brushes.push_back(MapBrush::box(box->first, box->second, kCollisionMaterial));
+  m_selection = {Selection::Type::Brush, static_cast<int>(m_map.brushes.size()) - 1};
+  return m_selection.index;
+}
+
 int MapEditor::addEntity(std::string type, const glm::vec3 &origin, float yaw) {
   record();
   touch();
@@ -138,8 +197,10 @@ void MapEditor::remove(Selection s) {
   touch();
   if (s.type == Selection::Type::Brush) {
     m_map.brushes.erase(m_map.brushes.begin() + s.index);
-  } else {
+  } else if (s.type == Selection::Type::Entity) {
     m_map.entities.erase(m_map.entities.begin() + s.index);
+  } else {
+    m_map.props.erase(m_map.props.begin() + s.index);
   }
   m_selection = {};
 }
@@ -153,9 +214,12 @@ Selection MapEditor::duplicate(Selection s, const glm::vec3 &offset) {
   if (s.type == Selection::Type::Brush) {
     m_map.brushes.push_back(m_map.brushes[static_cast<std::size_t>(s.index)]);
     m_selection = {Selection::Type::Brush, static_cast<int>(m_map.brushes.size()) - 1};
-  } else {
+  } else if (s.type == Selection::Type::Entity) {
     m_map.entities.push_back(m_map.entities[static_cast<std::size_t>(s.index)]);
     m_selection = {Selection::Type::Entity, static_cast<int>(m_map.entities.size()) - 1};
+  } else {
+    m_map.props.push_back(m_map.props[static_cast<std::size_t>(s.index)]);
+    m_selection = {Selection::Type::Prop, static_cast<int>(m_map.props.size()) - 1};
   }
   // The copy is already selected; shift it as part of the same undo step.
   beginGroup();
@@ -173,6 +237,10 @@ void MapEditor::move(Selection s, const glm::vec3 &delta) {
   touch();
   if (s.type == Selection::Type::Entity) {
     m_map.entities[static_cast<std::size_t>(s.index)].origin += delta;
+    return;
+  }
+  if (s.type == Selection::Type::Prop) {
+    m_map.props[static_cast<std::size_t>(s.index)].origin += delta;
     return;
   }
   MapBrush &b = m_map.brushes[static_cast<std::size_t>(s.index)];
@@ -299,12 +367,44 @@ std::optional<PickHit> MapEditor::pick(const glm::vec3 &origin, const glm::vec3 
       consider({Selection::Type::Entity, static_cast<int>(i)}, *t);
     }
   }
+  for (std::size_t i = 0; i < m_map.props.size(); ++i) {
+    const auto box = propBox(m_map.props[i], m_propExtents);
+    if (!box) {
+      continue;
+    }
+    // Ray vs the prop's box (slab test).
+    float enter = 0.0F;
+    float leave = maxDistance;
+    bool hit = true;
+    for (int axis = 0; axis < 3 && hit; ++axis) {
+      if (std::fabs(dir[axis]) < 1e-8F) {
+        hit = origin[axis] >= box->first[axis] && origin[axis] <= box->second[axis];
+        continue;
+      }
+      float t0 = (box->first[axis] - origin[axis]) / dir[axis];
+      float t1 = (box->second[axis] - origin[axis]) / dir[axis];
+      if (t0 > t1) std::swap(t0, t1);
+      enter = std::max(enter, t0);
+      leave = std::min(leave, t1);
+      hit = enter <= leave;
+    }
+    if (hit && enter > 0.0F) {
+      consider({Selection::Type::Prop, static_cast<int>(i)}, enter);
+    }
+  }
   return best;
 }
 
 std::optional<std::pair<glm::vec3, glm::vec3>> MapEditor::bounds(Selection s) const {
   if (!exists(s)) {
     return std::nullopt;
+  }
+  if (s.type == Selection::Type::Prop) {
+    const MapProp &p = m_map.props[static_cast<std::size_t>(s.index)];
+    if (const auto box = propBox(p, m_propExtents)) {
+      return *box;
+    }
+    return std::pair{p.origin - glm::vec3(32.0F, 0.0F, 32.0F), p.origin + glm::vec3(32.0F, 64.0F, 32.0F)};
   }
   if (s.type == Selection::Type::Entity) {
     const glm::vec3 o = m_map.entities[static_cast<std::size_t>(s.index)].origin;
@@ -358,6 +458,15 @@ std::vector<MapIssue> MapEditor::validate() const {
         if (down.fraction >= 1.0F) {
           issues.push_back({name + ": nothing below it (it would fall out of the map)", false});
         }
+      }
+    }
+  }
+  if (m_propExtents) {
+    for (std::size_t i = 0; i < m_map.props.size(); ++i) {
+      if (!m_propExtents(m_map.props[i].model)) {
+        issues.push_back({"prop " + std::to_string(i) + ": unknown model '" + m_map.props[i].model +
+                              "' (it will not be drawn)",
+                          false});
       }
     }
   }

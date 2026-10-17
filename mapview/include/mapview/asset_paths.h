@@ -17,6 +17,11 @@ inline std::filesystem::path characterModelPath() {
          "UAL1_Standard.glb";
 }
 
+// Quaternius-style modular prototyping kit (FBX): walls, floors, stairs, ...
+inline std::filesystem::path propPiecesDir() {
+  return assetsRoot() / "Free 3D Modular Game Assets For Prototyping" / "Pieces";
+}
+
 // Styloo gun pack (normal-mapped GLB versions).
 inline std::filesystem::path gunModelPath(const std::string &stem) {
   return assetsRoot() / "Styloo Guns Asset Pack GLTF FBX V1.1" / "Normal version Color and NormalMap" /

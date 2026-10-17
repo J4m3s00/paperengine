@@ -74,6 +74,18 @@ MapBrush parseBrush(const Json &j) {
   return out;
 }
 
+MapProp parseProp(const Json &j) {
+  MapProp p;
+  p.model = j.at("model").get<std::string>();
+  p.origin = vec3Of(j.at("origin"), "origin");
+  p.yaw = glm::radians(j.value("yaw", 0.0F));
+  p.scale = j.value("scale", 1.0F);
+  if (p.model.empty() || !(p.scale > 0.0F)) {
+    fail("prop needs a model name and a positive scale");
+  }
+  return p;
+}
+
 MapEntity parseEntity(const Json &j) {
   MapEntity e;
   e.type = j.at("type").get<std::string>();
@@ -240,6 +252,11 @@ std::expected<MapData, Error> parseMap(std::string_view text) {
       context = "entity " + std::to_string(index++);
       map.entities.push_back(parseEntity(e));
     }
+    index = 0;
+    for (const Json &p : root.value("props", Json::array())) {
+      context = "prop " + std::to_string(index++);
+      map.props.push_back(parseProp(p));
+    }
   } catch (const ParseError &e) {
     return invalid(context + ": " + e.message);
   } catch (const Json::exception &e) {
@@ -304,6 +321,16 @@ std::string serializeMap(const MapData &map) {
                         {"yaw", glm::degrees(e.yaw)}});
   }
   root["entities"] = std::move(entities);
+  if (!map.props.empty()) {
+    Json props = Json::array();
+    for (const MapProp &p : map.props) {
+      props.push_back({{"model", p.model},
+                       {"origin", {p.origin.x, p.origin.y, p.origin.z}},
+                       {"yaw", glm::degrees(p.yaw)},
+                       {"scale", p.scale}});
+    }
+    root["props"] = std::move(props);
+  }
   return root.dump(1);
 }
 

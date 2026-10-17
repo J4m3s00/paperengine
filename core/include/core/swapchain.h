@@ -27,6 +27,12 @@ public:
   // e.g. when the window is minimised.
   [[nodiscard]] std::expected<bool, Error> recreate(const Window &window);
 
+  // Vsync waits for the display (FIFO); without it frames are presented as
+  // soon as possible (mailbox or immediate when the GPU supports them). Takes
+  // effect at the next recreate().
+  void setVSync(bool vsync) { m_vsync = vsync; }
+  [[nodiscard]] bool vsync() const { return m_vsync; }
+
   [[nodiscard]] VkSwapchainKHR handle() const { return m_swapchain; }
   [[nodiscard]] VkFormat format() const { return m_format; }
   [[nodiscard]] VkExtent2D extent() const { return m_extent; }
@@ -41,6 +47,7 @@ private:
   void destroyImageViews();
 
   const VulkanContext &m_context;
+  bool m_vsync = true;
   VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
   VkFormat m_format = VK_FORMAT_UNDEFINED;
   VkExtent2D m_extent{};

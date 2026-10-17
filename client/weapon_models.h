@@ -1,6 +1,6 @@
 #pragma once
 
-#include "asset_paths.h"
+#include "mapview/asset_paths.h"
 
 #include "core/renderer/renderer.h"
 #include "core/scene/scene.h"

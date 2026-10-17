@@ -86,6 +86,27 @@ private:
     return std::nullopt;
   }
 
+  std::optional<TextureHandle> paletteTexture() {
+    for (const auto &base : {m_path.parent_path(), m_path.parent_path().parent_path()}) {
+      const std::filesystem::path candidate = base / "texture.png";
+      std::error_code ec;
+      if (!std::filesystem::exists(candidate, ec)) {
+        continue;
+      }
+      if (const auto cached = m_textures.find(candidate.string()); cached != m_textures.end()) {
+        return cached->second;
+      }
+      auto handle = m_renderer.loadTexture(candidate, ColorSpace::Srgb,
+                                           {.magFilter = Filter::Nearest, .minFilter = Filter::Nearest});
+      if (handle) {
+        m_model.textures.push_back(*handle);
+        m_textures[candidate.string()] = *handle;
+        return *handle;
+      }
+    }
+    return std::nullopt;
+  }
+
   std::expected<MaterialHandle, Error> materialFor(const ufbx_material *source) {
     const void *key = source;
     if (const auto it = m_materials.find(key); it != m_materials.end()) {
@@ -105,6 +126,11 @@ private:
                  static_cast<float>(base.value_vec4.z), 1.0F};
       }
       texture = textureFor(base.texture);
+    }
+    // The prototype kit ships one palette texture next to its piece folders and
+    // does not reference it from the FBX: its UVs index that palette.
+    if (!texture) {
+      texture = paletteTexture();
     }
     // A textured material's color is the texture's; the factor must not tint it.
     if (texture) {
