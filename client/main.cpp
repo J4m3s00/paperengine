@@ -1,4 +1,5 @@
 #include "local_player.h"
+#include "combat_view.h"
 #include "movement_hud.h"
 #include "net_hud.h"
 #include "world_mesh.h"
@@ -168,6 +169,7 @@ int main(int argc, char **argv) {
   std::unique_ptr<Paper::ClientSession> session;
   std::vector<entt::entity> remoteEntities;
   NetHud netHud;
+  std::unique_ptr<CombatView> combatView;
   const auto netStart = std::chrono::steady_clock::now();
   if (!connectTo.empty()) {
     const auto colon = connectTo.find(':');
@@ -193,16 +195,28 @@ int main(int argc, char **argv) {
     Paper::MapData hullMap;
     hullMap.brushes.push_back({hullBrush, "player"});
     const auto hullMesh = require(renderer->createMesh(buildMapMeshes(hullMap).front().mesh));
-    const auto hullMaterial = require(renderer->createMaterial(shader, {}));
-    require(renderer->setMaterialParam(hullMaterial, "baseColorFactor", glm::vec4(0.9F, 0.2F, 0.2F, 1.0F)));
-    require(renderer->setMaterialParam(hullMaterial, "metallicFactor", 0.0F));
-    require(renderer->setMaterialParam(hullMaterial, "roughnessFactor", 0.8F));
-    require(renderer->setMaterialParam(hullMaterial, "emissiveFactor", glm::vec3(0.0F)));
-    require(renderer->setMaterialParam(hullMaterial, "normalScale", 1.0F));
-    require(renderer->setMaterialParam(hullMaterial, "occlusionStrength", 1.0F));
-    require(renderer->setMaterialParam(hullMaterial, "alphaCutoff", 0.5F));
+    const auto makeMaterial = [&](const glm::vec3 &color, const glm::vec3 &emissive) {
+      const auto material = require(renderer->createMaterial(shader, {}));
+      require(renderer->setMaterialParam(material, "baseColorFactor", glm::vec4(color, 1.0F)));
+      require(renderer->setMaterialParam(material, "metallicFactor", 0.0F));
+      require(renderer->setMaterialParam(material, "roughnessFactor", 0.8F));
+      require(renderer->setMaterialParam(material, "emissiveFactor", emissive));
+      require(renderer->setMaterialParam(material, "normalScale", 1.0F));
+      require(renderer->setMaterialParam(material, "occlusionStrength", 1.0F));
+      require(renderer->setMaterialParam(material, "alphaCutoff", 0.5F));
+      materialHandles.push_back(material);
+      return material;
+    };
+    const auto hullMaterial = makeMaterial({0.9F, 0.2F, 0.2F}, glm::vec3(0.0F));
+    Paper::MapData cubeMap;
+    cubeMap.brushes.push_back({Paper::boxBrush(glm::vec3(-0.5F), glm::vec3(0.5F)), "cube"});
+    const auto cubeMesh = require(renderer->createMesh(buildMapMeshes(cubeMap).front().mesh));
+    meshHandles.push_back(cubeMesh);
+    combatView = std::make_unique<CombatView>(
+        scene, CombatView::Assets{cubeMesh, makeMaterial({0.15F, 0.15F, 0.17F}, glm::vec3(0.0F)),
+                                  makeMaterial({0.1F, 0.1F, 0.1F}, {2.5F, 2.0F, 0.8F}),
+                                  makeMaterial({0.1F, 0.1F, 0.1F}, {3.0F, 1.6F, 0.4F})});
     meshHandles.push_back(hullMesh);
-    materialHandles.push_back(hullMaterial);
     for (std::uint32_t i = 0; i < Paper::kMaxPlayerSlots; ++i) {
       const auto e = scene.createEntity();
       scene.registry().emplace<Paper::MeshRenderer>(e, hullMesh, hullMaterial);
@@ -224,6 +238,7 @@ int main(int argc, char **argv) {
     hud.draw(player.state(), viewCamera, collision);
     if (session) {
       netHud.draw(*session, lastFrameSeconds, simulated.latencyMs);
+      combatView->drawHud(*session);
     }
   });
 
@@ -234,14 +249,18 @@ int main(int argc, char **argv) {
   bool f1Held = false;
   bool rHeld = false;
   int frame = 0;
+  int shotFrame = -1;
   double lastTime = window->time();
   while (!window->shouldClose()) {
     window->update();
     ++frame;
     if (screenshotPath != nullptr) {
-      if (frame == 30) {
+      // Online, wait until the world has arrived.
+      const bool ready = frame >= 30 && (!session || session->stats().snapshotsReceived > 40);
+      if (ready && shotFrame < 0) {
         renderer->requestScreenshot(screenshotPath);
-      } else if (frame == 31) {
+        shotFrame = frame;
+      } else if (shotFrame >= 0 && frame > shotFrame) {
         window->requestClose();
       }
     }
@@ -257,7 +276,7 @@ int main(int argc, char **argv) {
                                               : Paper::CursorMode::Captured);
     }
     f1Held = f1;
-    const bool r = window->keyDown(Paper::Key::R);
+    const bool r = window->keyDown(Paper::Key::T);
     if (r && !rHeld && !session) {
       player.respawn(spawnOrigin, spawnYaw);
     }
@@ -278,12 +297,13 @@ int main(int argc, char **argv) {
       player.update(*window, lastFrameSeconds, !overlay.visible());
     }
     if (session) {
+      combatView->update(lastFrameSeconds, player.camera(camera), *session, collision);
       const auto remotes = session->remotePlayers();
       for (std::size_t i = 0; i < remoteEntities.size(); ++i) {
         auto &t = scene.registry().get<Paper::Transform>(remoteEntities[i]);
         const auto it = std::find_if(remotes.begin(), remotes.end(),
                                      [&](const Paper::NetPlayer &p) { return p.slot == i; });
-        if (it == remotes.end()) {
+        if (it == remotes.end() || !it->vitals.alive) {
           t.scale = glm::vec3(0.0F);
           continue;
         }

@@ -83,6 +83,19 @@ public:
       cmd.jump = window.keyDown(Paper::Key::Space);
       cmd.duck = window.keyDown(Paper::Key::LeftControl);
       cmd.walk = window.keyDown(Paper::Key::LeftShift);
+      if (m_session) {
+        cmd.attack = window.mouseDown(Paper::MouseButton::Left);
+        cmd.reload = window.keyDown(Paper::Key::R);
+        constexpr Paper::Key kNumbers[] = {Paper::Key::Num1, Paper::Key::Num2, Paper::Key::Num3,
+                                           Paper::Key::Num4, Paper::Key::Num5, Paper::Key::Num6,
+                                           Paper::Key::Num7};
+        for (std::size_t i = 0; i < std::size(kNumbers); ++i) {
+          if (window.keyDown(kNumbers[i])) {
+            m_weaponSelect = static_cast<std::uint8_t>(i + 1);
+          }
+        }
+        cmd.weaponSelect = m_weaponSelect;
+      }
     }
 
     m_step.advance(m_session ? frameSeconds * m_session->timeScale() : frameSeconds);
@@ -94,6 +107,7 @@ public:
       m_prev = m_state;
       if (m_session) {
         m_session->tick(cmd);
+        m_weaponSelect = 0; // a selection is sent once
         if (m_session->playing()) {
           m_state = m_session->predicted();
           // Draw with the fading correction applied, not the raw prediction.
@@ -128,8 +142,10 @@ public:
     const auto alpha = static_cast<float>(m_step.alpha());
     base.position = glm::mix(m_prev.origin, m_state.origin, alpha) +
                     glm::vec3(0.0F, m_eyeHeight, 0.0F);
-    base.rotation = glm::angleAxis(m_yaw, glm::vec3(0.0F, 1.0F, 0.0F)) *
-                    glm::angleAxis(m_pitch, glm::vec3(1.0F, 0.0F, 0.0F));
+    // Recoil shows in the view: the crosshair is where the bullet goes.
+    const glm::vec2 punch = m_session ? m_session->combat().punch : glm::vec2(0.0F);
+    base.rotation = glm::angleAxis(m_yaw + glm::radians(punch.y), glm::vec3(0.0F, 1.0F, 0.0F)) *
+                    glm::angleAxis(m_pitch + glm::radians(punch.x), glm::vec3(1.0F, 0.0F, 0.0F));
     return base;
   }
 
@@ -158,4 +174,5 @@ private:
   std::optional<Paper::Replay> m_recording;
   Paper::ClientSession *m_session = nullptr;
   bool m_havePrev = false;
+  std::uint8_t m_weaponSelect = 0;
 };
