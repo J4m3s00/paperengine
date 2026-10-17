@@ -12,6 +12,7 @@
 #include "core/scene/scene.h"
 #include "core/scene/transform_system.h"
 #include "core/window.h"
+#include "game/hitbox.h"
 #include "game/map.h"
 #include "game/movement.h"
 #include "game/replay.h"
@@ -200,10 +201,6 @@ int main(int argc, char **argv) {
       }
     }
 
-    Paper::BrushDesc hullBrush = Paper::boxBrush(Paper::kStandingHull.mins, Paper::kStandingHull.maxs);
-    Paper::MapData hullMap;
-    hullMap.brushes.push_back({hullBrush, "player"});
-    const auto hullMesh = require(renderer->createMesh(buildMapMeshes(hullMap).front().mesh));
     const auto makeMaterial = [&](const glm::vec3 &color, const glm::vec3 &emissive) {
       const auto material = require(renderer->createMaterial(shader, {}));
       require(renderer->setMaterialParam(material, "baseColorFactor", glm::vec4(color, 1.0F)));
@@ -216,7 +213,6 @@ int main(int argc, char **argv) {
       materialHandles.push_back(material);
       return material;
     };
-    const auto hullMaterial = makeMaterial({0.9F, 0.2F, 0.2F}, glm::vec3(0.0F));
     Paper::MapData cubeMap;
     cubeMap.brushes.push_back({Paper::boxBrush(glm::vec3(-0.5F), glm::vec3(0.5F)), "cube"});
     const auto cubeMesh = require(renderer->createMesh(buildMapMeshes(cubeMap).front().mesh));
@@ -226,12 +222,26 @@ int main(int argc, char **argv) {
                                   makeMaterial({0.1F, 0.1F, 0.1F}, {2.5F, 2.0F, 0.8F}),
                                   makeMaterial({0.1F, 0.1F, 0.1F}, {3.0F, 1.6F, 0.4F})});
     combatView->setAudio(audio.get());
-    meshHandles.push_back(hullMesh);
-    for (std::uint32_t i = 0; i < Paper::kMaxPlayerSlots; ++i) {
-      const auto e = scene.createEntity();
-      scene.registry().emplace<Paper::MeshRenderer>(e, hullMesh, hullMaterial);
-      scene.registry().get<Paper::Transform>(e).scale = glm::vec3(0.0F); // hidden
-      remoteEntities.push_back(e);
+    // Other players are drawn as their hitboxes, one colored box per hit
+    // group, so what you see is exactly what you can hit.
+    const glm::vec3 groupColors[] = {{0.9F, 0.15F, 0.15F},  // head
+                                     {0.95F, 0.5F, 0.1F},   // chest
+                                     {0.95F, 0.85F, 0.2F},  // stomach
+                                     {0.2F, 0.5F, 0.95F},   // left arm
+                                     {0.35F, 0.7F, 0.95F},  // right arm
+                                     {0.2F, 0.75F, 0.3F},   // left leg
+                                     {0.45F, 0.85F, 0.4F}}; // right leg
+    Paper::MaterialHandle groupMaterials[7];
+    for (int g = 0; g < 7; ++g) {
+      groupMaterials[g] = makeMaterial(groupColors[g] * 0.8F, groupColors[g] * 0.25F);
+    }
+    for (std::uint32_t slot = 0; slot < Paper::kMaxPlayerSlots; ++slot) {
+      for (std::size_t g = 0; g < 7; ++g) {
+        const auto e = scene.createEntity();
+        scene.registry().emplace<Paper::MeshRenderer>(e, cubeMesh, groupMaterials[g]);
+        scene.registry().get<Paper::Transform>(e).scale = glm::vec3(0.0F); // hidden
+        remoteEntities.push_back(e);
+      }
     }
   }
 
@@ -322,17 +332,28 @@ int main(int argc, char **argv) {
     if (session) {
       combatView->update(lastFrameSeconds, player.camera(camera), *session, collision);
       const auto remotes = session->remotePlayers();
-      for (std::size_t i = 0; i < remoteEntities.size(); ++i) {
-        auto &t = scene.registry().get<Paper::Transform>(remoteEntities[i]);
+      const Paper::FixedHitboxProvider hitboxProvider;
+      for (std::size_t slot = 0; slot < Paper::kMaxPlayerSlots; ++slot) {
         const auto it = std::find_if(remotes.begin(), remotes.end(),
-                                     [&](const Paper::NetPlayer &p) { return p.slot == i; });
-        if (it == remotes.end() || !it->vitals.alive) {
-          t.scale = glm::vec3(0.0F);
-          continue;
+                                     [&](const Paper::NetPlayer &p) { return p.slot == slot; });
+        Paper::HitboxSet set;
+        const bool visible = it != remotes.end() && it->vitals.alive;
+        if (visible) {
+          hitboxProvider.hitboxes(Paper::poseOf(it->state, it->yaw, it->pitch), set);
         }
-        t.scale = glm::vec3(1.0F);
-        t.position = it->state.origin;
-        t.rotation = glm::angleAxis(it->yaw, glm::vec3(0.0F, 1.0F, 0.0F));
+        for (std::size_t g = 0; g < 7; ++g) {
+          auto &t = scene.registry().get<Paper::Transform>(remoteEntities[slot * 7 + g]);
+          if (!visible || g >= set.count) {
+            t.scale = glm::vec3(0.0F);
+            continue;
+          }
+          const Paper::HitboxLocal &box = set.boxes[g];
+          // Local (player yaw) frame -> world.
+          const glm::quat yaw = glm::angleAxis(set.yaw, glm::vec3(0.0F, 1.0F, 0.0F));
+          t.position = set.origin + yaw * ((box.mins + box.maxs) * 0.5F);
+          t.rotation = yaw;
+          t.scale = box.maxs - box.mins;
+        }
       }
     }
     Paper::TransformSystem::update(scene);
