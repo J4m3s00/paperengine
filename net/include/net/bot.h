@@ -24,6 +24,9 @@ public:
     c.duck = m_duck;
     c.walk = m_walk;
     c.jump = m_jumpEvery > 0 && (m_ticksLeft % m_jumpEvery) == 0;
+    c.attack = m_shooting;
+    c.reload = m_reloadAt == m_ticksLeft;
+    c.weaponSelect = m_ticksLeft == 1 ? m_nextWeapon : 0;
     return c;
   }
 
@@ -46,6 +49,9 @@ private:
     m_duck = random() % 8 == 0;
     m_walk = random() % 8 == 0;
     m_jumpEvery = random() % 3 == 0 ? 40 : 0;
+    m_shooting = random() % 2 == 0;
+    m_reloadAt = random() % 4 == 0 ? 10 : -1;
+    m_nextWeapon = random() % 3 == 0 ? static_cast<std::uint8_t>(1 + random() % 7) : 0;
   }
 
   std::uint64_t m_state;
@@ -57,5 +63,8 @@ private:
   bool m_duck = false;
   bool m_walk = false;
   int m_jumpEvery = 0;
+  bool m_shooting = false;
+  int m_reloadAt = -1;
+  std::uint8_t m_nextWeapon = 0;
 };
 } // namespace Paper

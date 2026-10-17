@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Paper Engine: an early-stage C++23 Vulkan 1.3 engine (CMake project `myengine`). Targets (ADR 0012, plan in `docs/plan/`): `base` (header-only: `Error`, glm, spdlog), `core` (engine static library, namespace `Paper`), `game` (shared headless simulation), `net` (protocol/transport), `sandbox` (drives `core`), `client` and `server` (stubs for now; `server` must stay free of Vulkan/GLFW and links only `game` + `net`). `game` depends only on `base`; `net` depends on `base` and `game` (it serializes game types). Private GitHub repo (`J4m3s00/paperengine`); no tests or linter configured yet.
+Paper Engine: an early-stage C++23 Vulkan 1.3 engine (CMake project `myengine`). Targets (ADR 0012, plan in `docs/plan/`): `base` (header-only: `Error`, glm, spdlog), `core` (engine static library, namespace `Paper`), `game` (shared headless simulation), `net` (protocol/transport), `sandbox` (drives `core`), `client` and `server` (game executables; `server` must stay free of Vulkan/GLFW and links only `game` + `net`). `game` depends only on `base`; `net` depends on `base` and `game` (it serializes game types). Private GitHub repo (`J4m3s00/paperengine`); no tests or linter configured yet.
 
 ## Commands
 
@@ -50,6 +50,8 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 - Tests: doctest in `game/tests` (`ctest --preset debug`). Cvars (`base/cvar.h`): typed, clamped, settable from strings/config files; game code registers them on `Paper::cvars()`.
 
 - Netcode (`net/`, ADR 0009/0013): `Transport` (ENet: `EnetTransport`; tests: `LoopbackNetwork` with a seeded conditioner; `ConditionedTransport` wraps any transport). `protocol.h`: bit-packed messages, delta snapshots against the last acked baseline. `Server` (headless, no clock/sockets: call `tick()` at 128 Hz) and `ClientSession` (prediction + reconciliation + interpolation; per tick call `tick(input)`). Usercmds are quantized on the wire; the client predicts with `quantizeUserCmd`. Tests: `net_tests`. Executables: `server` (dedicated), `bots` (`--inprocess` soak or `--connect` over UDP), `client --connect host:port [--lag RTT --jitter ms --loss p]`.
+
+- Combat (ADR 0011, 0014): weapons are JSON in `weapons/` (`WeaponDb`); `game/weapon.h` `stepWeapon` is the shared fire/reload/recoil/spread state machine (clock = usercmd seq). `game/hitbox.h` (`HitboxProvider`, `FixedHitboxProvider`) and `game/lag_compensation.h` (pose history + rewind). `net/server.h` resolves hitscan shots after all players moved (`resolveShot`), `addBot` adds server bots. Online client controls: mouse 1 fire, R reload, 1-7 weapons (offline respawn is T). `client/combat_view.h` has the placeholder effects and HUD. `audio/` is a separate library (miniaudio, `AudioEngine`, `Synth` placeholder sounds; `noDevice` mode for tests). The server and bots take `--weapons dir` / use `PAPER_WEAPONS_DIR`.
 
 ## Conventions
 

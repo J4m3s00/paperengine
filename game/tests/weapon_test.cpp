@@ -313,3 +313,55 @@ TEST_CASE("a replayed weapon stream gives identical state") {
   CHECK(a.ammo == b.ammo);
   CHECK(a.extraSpread == b.extraSpread);
 }
+
+TEST_CASE("every gun follows its own spray pattern shot by shot") {
+  for (std::size_t w = 0; w < db().size(); ++w) {
+    const WeaponDef &def = db().at(w);
+    if (def.melee) continue;
+    CAPTURE(def.id);
+    Shooter s;
+    s.state = makeLoadout(db(), static_cast<std::uint8_t>(w));
+    s.state.ammo[w].clip = 100;
+    s.idle(static_cast<int>(def.drawTime * 128) + 2);
+    UserCmd c;
+    c.attack = true;
+    const auto &pattern = def.recoil.pattern;
+    for (std::size_t shot = 0; shot < pattern.size() + 2; ++shot) {
+      int guard = 0;
+      while (!s.tick(c).fired && ++guard < 400) {
+        // Semi-automatic guns need the trigger released between shots.
+        if (!def.automatic) s.tick({});
+      }
+      REQUIRE(guard < 400);
+      const auto &expected = pattern[std::min(shot, pattern.size() - 1)];
+      CHECK(s.state.punch.x == doctest::Approx(expected.x));
+      CHECK(s.state.punch.y == doctest::Approx(expected.y));
+    }
+  }
+}
+
+TEST_CASE("golden weapon stream: fire rate, ammo and recoil do not change by accident") {
+  // A scripted 20 second session. If you change weapon data or the weapon
+  // simulation on purpose, update the expected numbers below.
+  Shooter s;
+  int reloads = 0;
+  for (int t = 0; t < 128 * 20; ++t) {
+    UserCmd c;
+    c.attack = (t / 96) % 2 == 0;
+    c.reload = t % 1000 == 999;
+    c.weaponSelect = t == 128 * 10 ? static_cast<std::uint8_t>(kGlock + 1) : 0;
+    c.yaw = 0.001F * static_cast<float>(t % 500);
+    s.tick(c);
+    reloads += s.last.reloadStarted ? 1 : 0;
+  }
+  MESSAGE("shots " << s.shots << " reloads " << reloads << " weapon " << int(s.state.weapon)
+                   << " ak clip " << s.state.ammo[kAk].clip << "/" << s.state.ammo[kAk].reserve
+                   << " glock clip " << s.state.ammo[kGlock].clip << " punch " << s.state.punch.x
+                   << "," << s.state.punch.y);
+  CHECK(s.shots == 38);
+  CHECK(reloads == 3);
+  CHECK(s.state.weapon == kGlock);
+  CHECK(s.state.ammo[kAk].clip == 27);
+  CHECK(s.state.ammo[kAk].reserve == 60);
+  CHECK(s.state.ammo[kGlock].clip == 18);
+}
