@@ -395,7 +395,6 @@ void Server::startRound() {
     }
     Client &c = *m_clients[slot];
     respawn(slot, c, spawnFor(slot, c, indexInTeam[static_cast<std::size_t>(c.info.team)]++));
-    c.queue.clear();
   }
   m_pendingShots.clear();
 }

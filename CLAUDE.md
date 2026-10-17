@@ -53,6 +53,8 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 
 - Combat (ADR 0011, 0014): weapons are JSON in `weapons/` (`WeaponDb`); `game/weapon.h` `stepWeapon` is the shared fire/reload/recoil/spread state machine (clock = usercmd seq). `game/hitbox.h` (`HitboxProvider`, `FixedHitboxProvider`) and `game/lag_compensation.h` (pose history + rewind). `net/server.h` resolves hitscan shots after all players moved (`resolveShot`), `addBot` adds server bots. Online client controls: mouse 1 fire, R reload, 1-7 weapons (offline respawn is T). `client/combat_view.h` has the placeholder effects and HUD. `audio/` is a separate library (miniaudio, `AudioEngine`, `Synth` placeholder sounds; `noDevice` mode for tests). The server and bots take `--weapons dir` / use `PAPER_WEAPONS_DIR`.
 
+- Rules and menu (ADR 0015): `game/rules.h` has the pure `RoundManager` (team elimination), `RulesCvars` (`mp_*`), `restrictCmd`. `Server` runs it when `ServerConfig::teamplay` is set (teams, team spawns, freeze, no mid-round respawn, stats, `kickAll`, `takeMatchRestarted` for map rotation); snapshots carry `MatchState` and per-player `PlayerInfo`. Server flags: `--config server.cfg`, `--maps a,b,c`, `--set cvar value`. The client opens a menu without `--connect`/`--offline`; it does the Hello/Accept handshake itself, loads the map the server names, then continues in `ClientSession::adoptAccept`. Escape opens the pause menu, Tab shows the scoreboard.
+
 ## Conventions
 
 Compiler flags `-Wall -Wextra -Wpedantic` apply to `core` only. Code style: 2-space indent, `m_` member prefix, `[[nodiscard]]` getters, deleted copy/move on RAII Vulkan wrappers (clang-format LLVM-like style).

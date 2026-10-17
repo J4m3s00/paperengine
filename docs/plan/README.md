@@ -37,6 +37,6 @@ M0-M3 together are the "dev world": one explorable map with stationary bots to p
 
 ## Open questions
 
-- Bomb defusal vs. deathmatch for the first real mode (decided in M4).
+- Bomb defusal vs. deathmatch for the first real mode: decided in M4 (ADR 0015): team elimination first, bomb later.
 - When to move from fixed hitboxes to skeleton hitboxes (decided from M6 profiling data).
 - Whether sub-tick input timestamps are needed once the 128 Hz tick is measured (M2).

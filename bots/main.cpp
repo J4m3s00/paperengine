@@ -3,6 +3,7 @@
 //   bots --inprocess [--bots N] [--seconds S] [--latency ms] [--jitter ms] [--loss 0.02]
 //       Server and bots share one process and a virtual clock (runs much
 //       faster than real time; exercises the network conditioner).
+//   bots --inprocess --teams ...   team elimination with short rounds
 //   bots --connect host[:port] [--bots N] [--seconds S]
 //       Real-time bots over UDP against a running server.
 #include "game/map.h"
@@ -34,6 +35,7 @@ struct Options {
   double seconds = 30.0;
   NetworkConditions conditions;
   std::uint64_t seed = 1;
+  bool teams = false;
   std::string map = std::string(PAPER_MAPS_DIR) + "/dev_world.json";
 };
 
@@ -70,6 +72,17 @@ int runInProcess(const Options &opt, const CollisionWorld &world, const MapData 
   auto &serverEp = net.addEndpoint();
   ServerConfig config;
   config.spawns = spawnPoints(map);
+  if (opt.teams) {
+    // Short rounds so a soak sees many of them.
+    config.teamplay = true;
+    config.rules.freezeSeconds = 2.0F;
+    config.rules.roundSeconds = 30.0F;
+    config.rules.roundEndSeconds = 2.0F;
+    config.rules.matchEndSeconds = 3.0F;
+    config.rules.roundsToWin = 3;
+    config.spawnsT = teamSpawnPoints(map, Team::T);
+    config.spawnsCT = teamSpawnPoints(map, Team::CT);
+  }
   Server server(serverEp, world, weapons, config);
 
   std::vector<std::unique_ptr<ClientSession>> clients;
@@ -116,6 +129,18 @@ int runInProcess(const Options &opt, const CollisionWorld &world, const MapData 
                s.cmdsExecuted, s.starvedTicks, s.cmdsDropped, s.fullSnapshotsSent, s.snapshotsSent,
                s.snapshotsSent ? static_cast<double>(s.snapshotBytesSent) / static_cast<double>(s.snapshotsSent) : 0.0);
   spdlog::info("network: {} packets, {} dropped", net.packetsSent(), net.packetsDropped());
+  if (opt.teams) {
+    const MatchState m = server.matchState();
+    int agree = 0;
+    for (const auto &c : clients) {
+      agree += c->match().phase == m.phase && c->match().round == m.round &&
+                       c->match().scoreT == m.scoreT && c->match().scoreCT == m.scoreCT
+                   ? 1
+                   : 0;
+    }
+    spdlog::info("rounds played {}, now round {} ({}:{}), {}/{} clients agree with the server on the match state",
+                 s.roundsPlayed, m.round, m.scoreT, m.scoreCT, agree, clients.size());
+  }
   report(clients, opt.seconds);
   return 0;
 }
@@ -186,6 +211,8 @@ int main(int argc, char **argv) {
       opt.conditions.loss = std::atof(argv[++i]);
     } else if (arg == "--seed" && hasValue) {
       opt.seed = static_cast<std::uint64_t>(std::atoll(argv[++i]));
+    } else if (arg == "--teams") {
+      opt.teams = true;
     } else if (arg == "--map" && hasValue) {
       opt.map = argv[++i];
     } else {
