@@ -499,6 +499,8 @@ private:
       m_banner = {std::string(teamName(static_cast<Paper::Team>(e.actor))) + " win the match!",
                   IM_COL32(255, 230, 80, 255), 9.0F, 0.0F};
       break;
+    case Paper::GameEvent::Type::Spawn:
+      break; // consumed by the session (view direction)
     case Paper::GameEvent::Type::Kill: {
       if (e.actor == session.slot()) {
         m_hitMarker = 0.4F;
