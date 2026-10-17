@@ -38,9 +38,10 @@ struct Rig {
   std::vector<LoopbackNetwork::Endpoint *> clientEps;
   std::vector<std::unique_ptr<ClientSession>> clients;
 
-  explicit Rig(std::uint64_t seed = 1, NetworkConditions cond = {})
+  explicit Rig(std::uint64_t seed = 1, NetworkConditions cond = {},
+               ServerConfig config = makeConfig())
       : net(seed), serverEp((net.setConditions(cond), net.addEndpoint())),
-        server(serverEp, world, weaponDb(), makeConfig()) {}
+        server(serverEp, world, weaponDb(), std::move(config)) {}
 
   static ServerConfig makeConfig() {
     ServerConfig c;
@@ -333,4 +334,67 @@ TEST_CASE("weapon switching and reloading are predicted") {
   rig.run(40, [](auto, auto) { return UserCmd{}; });
   CHECK(rig.server.combat(0)->weapon == 3);
   CHECK(client.stats().corrections == 0);
+}
+
+namespace {
+struct LagCompResult {
+  std::uint64_t shots = 0;
+  std::uint64_t hits = 0;
+};
+
+// A client that always aims at where it SEES the (moving) bot and taps the
+// trigger. With lag compensation the server should agree it was a hit.
+LagCompResult shootMovingBot(float maxRewindSeconds, NetworkConditions cond, bool moving = true) {
+  ServerConfig config = Rig::makeConfig();
+  config.maxRewindSeconds = maxRewindSeconds;
+  Rig rig(11, cond, config);
+  auto &client = rig.addClient();
+  const int bot = rig.server.addBot({glm::vec3(0, 2, -400), 0.0F}, moving);
+  REQUIRE(bot >= 0);
+  // Never let the bot die so every shot counts.
+  int cooldown = 0;
+  rig.run(128 * 40, [&](auto, auto t) {
+    UserCmd cmd;
+    if (t < 256) {
+      return cmd; // join and let everything settle
+    }
+    const auto remotes = client.remotePlayers();
+    for (const NetPlayer &p : remotes) {
+      if (p.slot != bot || !p.vitals.alive) {
+        continue;
+      }
+      const glm::vec3 eye = eyePosition(client.predicted());
+      const glm::vec3 d = (p.state.origin + glm::vec3(0, 52, 0)) - eye;
+      cmd.yaw = std::atan2(-d.x, -d.z);
+      cmd.pitch = std::asin(d.y / glm::length(d));
+      if (--cooldown <= 0 && glm::length(d) < 1500.0F) {
+        cmd.attack = true;
+        // Long enough for the spray pattern to reset: this bot does not
+        // compensate recoil.
+        cooldown = 90;
+      }
+    }
+    return cmd;
+  });
+  return {rig.server.stats().shotsFired, rig.server.stats().hits};
+}
+} // namespace
+
+TEST_CASE("lag compensation: shots at a moving target register at 100 ms RTT") {
+  const NetworkConditions lagged{.latencyMs = 50, .jitterMs = 3};
+  const LagCompResult compensated = shootMovingBot(0.2F, lagged);
+  const LagCompResult uncompensated = shootMovingBot(0.0F, lagged);
+  MESSAGE("with lag compensation: " << compensated.hits << "/" << compensated.shots
+                                    << ", without: " << uncompensated.hits << "/"
+                                    << uncompensated.shots);
+  const LagCompResult noLagMoving = shootMovingBot(0.2F, {}, true);
+  const LagCompResult lagStationary = shootMovingBot(0.2F, lagged, false);
+  MESSAGE("no lag moving: " << noLagMoving.hits << "/" << noLagMoving.shots << ", lag stationary: "
+                            << lagStationary.hits << "/" << lagStationary.shots);
+  const LagCompResult stationary = shootMovingBot(0.0F, lagged, false);
+  MESSAGE("stationary target without compensation: " << stationary.hits << "/" << stationary.shots);
+  REQUIRE(compensated.shots > 20);
+  CHECK(static_cast<double>(stationary.hits) > 0.9 * static_cast<double>(stationary.shots));
+  CHECK(static_cast<double>(compensated.hits) > 0.85 * static_cast<double>(compensated.shots));
+  CHECK(static_cast<double>(uncompensated.hits) < 0.7 * static_cast<double>(uncompensated.shots));
 }
