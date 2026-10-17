@@ -12,6 +12,7 @@ enum class ErrorCode {
   InvalidArgument,
   Asset,
   NotFound,
+  Network,
 };
 
 struct Error {

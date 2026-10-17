@@ -60,6 +60,11 @@ FetchContent_Declare(nlohmann_json
   GIT_TAG        v3.12.0)
 set(JSON_Install OFF CACHE BOOL "" FORCE)
 
+FetchContent_Declare(enet
+  GIT_REPOSITORY https://github.com/lsalzman/enet.git
+  GIT_TAG        v1.3.18)
+set(ENET_STATIC ON CACHE BOOL "" FORCE)
+
 # Dear ImGui has no CMake build; core/CMakeLists.txt builds it from source.
 FetchContent_Declare(imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -73,7 +78,7 @@ if(PAPER_ENABLE_PROFILER)
   FetchContent_MakeAvailable(tracy)
 endif()
 
-FetchContent_MakeAvailable(nlohmann_json imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
+FetchContent_MakeAvailable(enet nlohmann_json imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
 
 enable_testing()
 
