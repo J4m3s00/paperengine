@@ -316,3 +316,24 @@ TEST_CASE("movement cvars match the default params") {
   CHECK(p.enableBunnyhopping == kParams.enableBunnyhopping);
   CHECK(registry.find("sv_airaccelerate") != nullptr);
 }
+
+TEST_CASE("counter-strafing stops much faster than releasing the key") {
+  const auto world = makeWorld({floorBrush()});
+  const auto ticksToStop = [&](const UserCmd &cmd, bool untilReversed) {
+    PlayerState s = standing(world);
+    s.velocity = {0, 0, -250};
+    int ticks = 0;
+    while (ticks < 1000 && (untilReversed ? s.velocity.z < 0.0F : horizontalSpeed(s) > 0.0F)) {
+      run(s, cmd, world, 1);
+      ++ticks;
+    }
+    return ticks;
+  };
+  UserCmd back;
+  back.forward = -1.0F;
+  const int released = ticksToStop({}, false);
+  const int countered = ticksToStop(back, true);
+  CHECK(released > 45);
+  CHECK(countered < 20);
+  CHECK(countered * 3 < released);
+}
