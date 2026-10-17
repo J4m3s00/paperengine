@@ -1,6 +1,7 @@
 #pragma once
 
 #include "game/collision.h"
+#include "game/map.h"
 #include "game/movement.h"
 #include "net/protocol.h"
 #include "net/transport.h"
@@ -18,6 +19,9 @@ struct SpawnPoint {
   glm::vec3 origin{0.0F};
   float yaw = 0.0F;
 };
+
+// The "spawn" entities of a map.
+[[nodiscard]] std::vector<SpawnPoint> spawnPoints(const MapData &map);
 
 struct ServerConfig {
   std::uint16_t tickRate = 128;

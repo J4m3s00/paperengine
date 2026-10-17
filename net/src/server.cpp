@@ -12,6 +12,14 @@ namespace {
 constexpr std::size_t kSnapshotHistory = 64;
 } // namespace
 
+std::vector<SpawnPoint> spawnPoints(const MapData &map) {
+  std::vector<SpawnPoint> out;
+  for (const MapEntity &e : map.entitiesOfType("spawn")) {
+    out.push_back({e.origin, e.yaw});
+  }
+  return out;
+}
+
 Server::Server(Transport &transport, const CollisionWorld &world, ServerConfig config)
     : m_transport(transport), m_world(world), m_config(std::move(config)) {
   if (m_config.spawns.empty()) {
