@@ -3,6 +3,7 @@ name: Release (Windows)
 on:
   push:
     tags: ["v*"]
+    branches: [windows-release]   # temporary: iterate on CI
   workflow_dispatch:   # manual run builds the zip as a workflow artifact only
 
 permissions:
