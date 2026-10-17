@@ -148,3 +148,30 @@ TEST_CASE("disconnect notifies both sides") {
   CHECK(drain(a)[0].type == NetEvent::Type::Disconnected);
   CHECK(drain(b)[0].type == NetEvent::Type::Disconnected);
 }
+
+#include "net/conditioned_transport.h"
+
+TEST_CASE("conditioned transport delays both directions") {
+  LoopbackNetwork net;
+  auto &a = net.addEndpoint();
+  auto &b = net.addEndpoint();
+  ConditionedTransport wrapped(a, {.latencyMs = 40});
+  std::int64_t now = 0;
+  const auto step = [&](std::int64_t ns) {
+    now += ns;
+    net.advance(ns);
+    wrapped.update(now);
+  };
+  sendByte(wrapped, b.id(), Channel::Unreliable, 1);
+  step(1 * kMs); // handed to the wire only after 40 ms
+  CHECK(drain(b).empty());
+  step(39 * kMs);
+  net.advance(0);
+  CHECK(drain(b).size() == 1);
+
+  sendByte(b, a.id(), Channel::Unreliable, 2);
+  step(1 * kMs);
+  CHECK(drain(wrapped).empty()); // arrived at `a`, held back 40 ms
+  step(40 * kMs);
+  CHECK(drain(wrapped).size() == 1);
+}

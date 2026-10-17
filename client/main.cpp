@@ -1,5 +1,6 @@
 #include "local_player.h"
 #include "movement_hud.h"
+#include "net_hud.h"
 #include "world_mesh.h"
 
 #include "base/cvar.h"
@@ -12,10 +13,14 @@
 #include "game/map.h"
 #include "game/movement.h"
 #include "game/replay.h"
+#include "net/conditioned_transport.h"
+#include "net/enet_transport.h"
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstdlib>
+#include <memory>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -64,12 +69,16 @@ glm::vec3 colorFor(const std::string &material) {
 } // namespace
 
 // Usage: client [--map map.json] [--screenshot out.png] [--record out.replay.json]
-//               [--set cvar value]...
+//               [--set cvar value]... [--connect host[:port]] [--name N]
+//               [--lag RTTms] [--jitter ms] [--loss 0..1]
 int main(int argc, char **argv) {
   std::filesystem::path mapPath = std::filesystem::path(PAPER_MAPS_DIR) / "dev_world.json";
   const char *screenshotPath = nullptr;
   const char *recordPath = nullptr;
   std::vector<std::pair<std::string, std::string>> cvarOverrides;
+  std::string connectTo;
+  std::string playerName = "player";
+  Paper::NetworkConditions simulated; // one-way, applied to both directions
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     if (arg == "--map" && i + 1 < argc) {
@@ -78,6 +87,16 @@ int main(int argc, char **argv) {
       screenshotPath = argv[++i];
     } else if (arg == "--record" && i + 1 < argc) {
       recordPath = argv[++i];
+    } else if (arg == "--connect" && i + 1 < argc) {
+      connectTo = argv[++i];
+    } else if (arg == "--name" && i + 1 < argc) {
+      playerName = argv[++i];
+    } else if (arg == "--lag" && i + 1 < argc) {
+      simulated.latencyMs = std::atof(argv[++i]) / 2.0;
+    } else if (arg == "--jitter" && i + 1 < argc) {
+      simulated.jitterMs = std::atof(argv[++i]);
+    } else if (arg == "--loss" && i + 1 < argc) {
+      simulated.loss = std::atof(argv[++i]);
     } else if (arg == "--set" && i + 2 < argc) {
       cvarOverrides.emplace_back(argv[i + 1], argv[i + 2]);
       i += 2;
@@ -141,6 +160,55 @@ int main(int argc, char **argv) {
   }
   player.respawn(spawnOrigin, spawnYaw);
 
+  // Online: connect, predict through the session, draw the other players.
+  std::unique_ptr<Paper::EnetTransport> enet;
+  std::unique_ptr<Paper::ConditionedTransport> conditioned;
+  std::unique_ptr<Paper::ClientSession> session;
+  std::vector<entt::entity> remoteEntities;
+  NetHud netHud;
+  const auto netStart = std::chrono::steady_clock::now();
+  if (!connectTo.empty()) {
+    const auto colon = connectTo.find(':');
+    const std::string host = connectTo.substr(0, colon);
+    const auto port = colon == std::string::npos
+                          ? Paper::kDefaultServerPort
+                          : static_cast<std::uint16_t>(std::atoi(connectTo.c_str() + colon + 1));
+    enet = require(Paper::EnetTransport::createClient());
+    const Paper::PeerId peer = require(enet->connect(host, port));
+    Paper::Transport *transport = enet.get();
+    if (simulated.latencyMs > 0 || simulated.jitterMs > 0 || simulated.loss > 0) {
+      conditioned = std::make_unique<Paper::ConditionedTransport>(*enet, simulated);
+      transport = conditioned.get();
+      spdlog::info("simulating {:.0f} ms RTT, {:.0f} ms jitter, {:.1f}% loss",
+                   simulated.latencyMs * 2, simulated.jitterMs, simulated.loss * 100.0);
+    }
+    session = std::make_unique<Paper::ClientSession>(*transport, peer, collision,
+                                                     movementCvars.params(), playerName);
+    player.setSession(session.get());
+    spdlog::info("connecting to {}:{}", host, port);
+
+    Paper::BrushDesc hullBrush = Paper::boxBrush(Paper::kStandingHull.mins, Paper::kStandingHull.maxs);
+    Paper::MapData hullMap;
+    hullMap.brushes.push_back({hullBrush, "player"});
+    const auto hullMesh = require(renderer->createMesh(buildMapMeshes(hullMap).front().mesh));
+    const auto hullMaterial = require(renderer->createMaterial(shader, {}));
+    require(renderer->setMaterialParam(hullMaterial, "baseColorFactor", glm::vec4(0.9F, 0.2F, 0.2F, 1.0F)));
+    require(renderer->setMaterialParam(hullMaterial, "metallicFactor", 0.0F));
+    require(renderer->setMaterialParam(hullMaterial, "roughnessFactor", 0.8F));
+    require(renderer->setMaterialParam(hullMaterial, "emissiveFactor", glm::vec3(0.0F)));
+    require(renderer->setMaterialParam(hullMaterial, "normalScale", 1.0F));
+    require(renderer->setMaterialParam(hullMaterial, "occlusionStrength", 1.0F));
+    require(renderer->setMaterialParam(hullMaterial, "alphaCutoff", 0.5F));
+    meshHandles.push_back(hullMesh);
+    materialHandles.push_back(hullMaterial);
+    for (std::uint32_t i = 0; i < Paper::kMaxPlayerSlots; ++i) {
+      const auto e = scene.createEntity();
+      scene.registry().emplace<Paper::MeshRenderer>(e, hullMesh, hullMaterial);
+      scene.registry().get<Paper::Transform>(e).scale = glm::vec3(0.0F); // hidden
+      remoteEntities.push_back(e);
+    }
+  }
+
   Paper::Camera camera;
   Paper::Camera viewCamera;
   camera.nearPlane = 1.0F;
@@ -152,6 +220,9 @@ int main(int argc, char **argv) {
     overlay.draw(lastFrameSeconds);
     hud.setDetailsVisible(overlay.visible());
     hud.draw(player.state(), viewCamera, collision);
+    if (session) {
+      netHud.draw(*session, lastFrameSeconds, simulated.latencyMs);
+    }
   });
 
   for (const auto &[name, value] : cvarOverrides) {
@@ -185,7 +256,7 @@ int main(int argc, char **argv) {
     }
     f1Held = f1;
     const bool r = window->keyDown(Paper::Key::R);
-    if (r && !rHeld) {
+    if (r && !rHeld && !session) {
       player.respawn(spawnOrigin, spawnYaw);
     }
     rHeld = r;
@@ -194,9 +265,30 @@ int main(int argc, char **argv) {
     lastFrameSeconds = static_cast<float>(now - lastTime);
     lastTime = now;
 
+    if (conditioned) {
+      const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now() - netStart)
+                          .count();
+      conditioned->update(ns);
+    }
     {
       PAPER_ZONE("player update");
       player.update(*window, lastFrameSeconds, !overlay.visible());
+    }
+    if (session) {
+      const auto remotes = session->remotePlayers();
+      for (std::size_t i = 0; i < remoteEntities.size(); ++i) {
+        auto &t = scene.registry().get<Paper::Transform>(remoteEntities[i]);
+        const auto it = std::find_if(remotes.begin(), remotes.end(),
+                                     [&](const Paper::NetPlayer &p) { return p.slot == i; });
+        if (it == remotes.end()) {
+          t.scale = glm::vec3(0.0F);
+          continue;
+        }
+        t.scale = glm::vec3(1.0F);
+        t.position = it->state.origin;
+        t.rotation = glm::angleAxis(it->yaw, glm::vec3(0.0F, 1.0F, 0.0F));
+      }
     }
     Paper::TransformSystem::update(scene);
     viewCamera = player.camera(camera);

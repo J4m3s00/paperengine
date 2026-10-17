@@ -8,6 +8,7 @@
 #include "game/movement.h"
 #include "game/replay.h"
 #include "game/tick.h"
+#include "net/client_session.h"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -27,6 +28,10 @@ public:
       : m_world(world), m_movement(movement), m_step(Paper::kServerTickSeconds),
         m_sensitivity(registry.add<float>("sensitivity", 2.0F, 0.01F, 50.0F,
                                           "Mouse sensitivity (CS: degrees = 0.022 * value)")) {}
+
+  // Online play: the session predicts and reconciles instead of the local
+  // movement code (it runs the same `movePlayer`). Null = offline.
+  void setSession(Paper::ClientSession *session) { m_session = session; }
 
   void respawn(const glm::vec3 &origin, float yaw) {
     m_state = {};
@@ -80,13 +85,26 @@ public:
       cmd.walk = window.keyDown(Paper::Key::LeftShift);
     }
 
-    m_step.advance(frameSeconds);
+    m_step.advance(m_session ? frameSeconds * m_session->timeScale() : frameSeconds);
     const Paper::MovementParams params = m_movement.params();
     if (m_recording && m_recording->cmds.empty()) {
       m_recording->params = params;
     }
     while (m_step.consumeStep()) {
       m_prev = m_state;
+      if (m_session) {
+        m_session->tick(cmd);
+        if (m_session->playing()) {
+          m_state = m_session->predicted();
+          // Draw with the fading correction applied, not the raw prediction.
+          m_state.origin = m_session->visualOrigin();
+          if (!m_havePrev) {
+            m_prev = m_state;
+            m_havePrev = true;
+          }
+        }
+        continue;
+      }
       if (m_recording) {
         m_recording->cmds.push_back(cmd);
       }
@@ -138,4 +156,6 @@ private:
   float m_pitch = 0.0F;
   float m_eyeHeight = Paper::kStandingEyeHeight;
   std::optional<Paper::Replay> m_recording;
+  Paper::ClientSession *m_session = nullptr;
+  bool m_havePrev = false;
 };
