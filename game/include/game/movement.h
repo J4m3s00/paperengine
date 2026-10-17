@@ -5,6 +5,8 @@
 
 #include <glm/glm.hpp>
 
+#include <cstdint>
+
 namespace Paper {
 // One tick of a player's input (the "usercmd" of ADR 0009).
 struct UserCmd {
@@ -19,6 +21,14 @@ struct UserCmd {
   bool duck = false;
   // Shift-walk: slower and silent in CS.
   bool walk = false;
+  // Combat input (game/weapon.h).
+  bool attack = false;
+  bool reload = false;
+  // 0 = keep, otherwise weapon index + 1.
+  std::uint8_t weaponSelect = 0;
+  // Server tick (fractional) at which the shooter's screen showed the other
+  // players, for lag compensation. 0 = unknown (no rewind).
+  float viewTick = 0.0F;
 };
 
 // The replicated movement state of one player. `origin` is at the feet.
