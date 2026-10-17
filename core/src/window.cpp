@@ -77,6 +77,28 @@ int toGlfw(Key key) {
     return GLFW_KEY_6;
   case Key::Num7:
     return GLFW_KEY_7;
+  case Key::G:
+    return GLFW_KEY_G;
+  case Key::Z:
+    return GLFW_KEY_Z;
+  case Key::Y:
+    return GLFW_KEY_Y;
+  case Key::Delete:
+    return GLFW_KEY_DELETE;
+  case Key::Up:
+    return GLFW_KEY_UP;
+  case Key::Down:
+    return GLFW_KEY_DOWN;
+  case Key::Left:
+    return GLFW_KEY_LEFT;
+  case Key::Right:
+    return GLFW_KEY_RIGHT;
+  case Key::PageUp:
+    return GLFW_KEY_PAGE_UP;
+  case Key::PageDown:
+    return GLFW_KEY_PAGE_DOWN;
+  case Key::Enter:
+    return GLFW_KEY_ENTER;
   }
   return GLFW_KEY_UNKNOWN;
 }

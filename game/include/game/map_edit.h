@@ -2,6 +2,7 @@
 
 #include "game/map.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -42,6 +43,8 @@ public:
   void load(MapData map);
   [[nodiscard]] bool dirty() const { return m_dirty; }
   void markSaved() { m_dirty = false; }
+  // Changes with every edit, undo, redo and load (cheap "did the map change?").
+  [[nodiscard]] std::uint64_t revision() const { return m_revision; }
 
   [[nodiscard]] Selection selection() const { return m_selection; }
   void select(Selection s);
@@ -82,7 +85,10 @@ private:
     Selection selection;
   };
   void record();
-  void touch() { m_dirty = true; }
+  void touch() {
+    m_dirty = true;
+    ++m_revision;
+  }
   [[nodiscard]] bool exists(Selection s) const;
 
   MapData m_map;
@@ -92,5 +98,6 @@ private:
   int m_groupDepth = 0;
   bool m_groupRecorded = false;
   bool m_dirty = false;
+  std::uint64_t m_revision = 0;
 };
 } // namespace Paper

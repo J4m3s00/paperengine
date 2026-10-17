@@ -67,6 +67,7 @@ void MapEditor::load(MapData map) {
   m_groupDepth = 0;
   m_groupRecorded = false;
   m_dirty = false;
+  ++m_revision;
 }
 
 bool MapEditor::exists(Selection s) const {

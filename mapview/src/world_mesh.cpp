@@ -1,4 +1,4 @@
-#include "world_mesh.h"
+#include "mapview/world_mesh.h"
 
 #include "game/brush_geometry.h"
 

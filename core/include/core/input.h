@@ -24,6 +24,17 @@ enum class Key {
   Num5,
   Num6,
   Num7,
+  G,
+  Z,
+  Y,
+  Delete,
+  Up,
+  Down,
+  Left,
+  Right,
+  PageUp,
+  PageDown,
+  Enter,
 };
 
 enum class MouseButton {
