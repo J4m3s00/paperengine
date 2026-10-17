@@ -1,5 +1,7 @@
 #pragma once
 
+#include "audio/audio.h"
+#include "audio/synth.h"
 #include "core/renderer/camera.h"
 #include "core/renderer/renderer.h"
 #include "core/scene/components.h"
@@ -12,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <array>
 #include <deque>
 #include <string>
 #include <vector>
@@ -29,6 +32,25 @@ public:
     Paper::MaterialHandle impact;
   };
 
+  // Optional: without it (no sound device) everything is silent.
+  void setAudio(Paper::AudioEngine *audio) {
+    m_audio = audio;
+    if (!audio) {
+      return;
+    }
+    const std::uint32_t rate = audio->sampleRate();
+    using namespace Paper::Synth;
+    const auto add = [&](const std::vector<float> &s) { return audio->addSound(s, rate); };
+    m_rifle = add(shot(ShotKind::Rifle, rate));
+    m_pistol = add(shot(ShotKind::Pistol, rate));
+    m_sniper = add(shot(ShotKind::Sniper, rate));
+    m_knife = add(shot(ShotKind::Knife, rate));
+    m_step = add(footstep(rate));
+    m_impactSound = add(impact(rate));
+    m_hitSound = add(hitMarker(rate));
+    m_reloadSound = add(reload(rate));
+  }
+
   CombatView(Paper::Scene &scene, const Assets &assets) : m_scene(scene) {
     m_gun = makeEntity(assets.cube, assets.gun);
     m_flash = makeEntity(assets.cube, assets.impact);
@@ -43,6 +65,10 @@ public:
   void update(float dt, const Paper::Camera &view, Paper::ClientSession &session,
               const Paper::CollisionWorld &world) {
     m_time += dt;
+    if (m_audio) {
+      m_audio->setListener(view.position, view.rotation * glm::vec3(0, 0, -1),
+                           view.rotation * glm::vec3(0, 1, 0));
+    }
     const glm::vec3 right = view.rotation * glm::vec3(1, 0, 0);
     const glm::vec3 up = view.rotation * glm::vec3(0, 1, 0);
     const glm::vec3 forward = view.rotation * glm::vec3(0, 0, -1);
@@ -50,6 +76,7 @@ public:
 
     for (const Paper::ShotInfo &shot : session.takeLocalShots()) {
       const Paper::WeaponDef &def = session.weapons().at(shot.weapon);
+      playShot(shot.weapon, session, shot.origin, /*own=*/true);
       if (def.melee) {
         m_kick = 1.0F;
         continue;
@@ -59,6 +86,9 @@ public:
       spawnTracer(muzzle, end);
       if (trace.fraction < 1.0F) {
         spawnImpact(end);
+        if (m_audio) {
+          m_audio->play(m_impactSound, end, 0.7F);
+        }
       }
       m_kick = 1.0F;
       m_flashLeft = 0.04F;
@@ -66,6 +96,13 @@ public:
     for (const Paper::GameEvent &e : session.takeEvents()) {
       handle(e, session);
     }
+
+    updateFootsteps(dt, session);
+    const bool reloading = session.combat().reloading();
+    if (reloading && !m_wasReloading && m_audio) {
+      m_audio->play2D(m_reloadSound, 0.8F);
+    }
+    m_wasReloading = reloading;
 
     m_kick = std::max(0.0F, m_kick - dt * 8.0F);
     m_hitMarker = std::max(0.0F, m_hitMarker - dt);
@@ -207,15 +244,63 @@ private:
     }
   }
 
+  void playShot(std::uint8_t weapon, const Paper::ClientSession &session, const glm::vec3 &at,
+                bool own) {
+    if (!m_audio) {
+      return;
+    }
+    const Paper::WeaponDef &def = session.weapons().at(weapon);
+    const Paper::SoundId id = def.melee ? m_knife
+                              : def.damage >= 100.0F ? m_sniper
+                              : def.slot == Paper::WeaponSlot::Secondary ? m_pistol
+                                                                         : m_rifle;
+    if (own) {
+      m_audio->play2D(id, 0.9F);
+    } else {
+      m_audio->play(id, at, 1.0F);
+    }
+  }
+
+  // Steps while running on the ground: every ~0.35 s for the local player and
+  // for each other player in view.
+  void updateFootsteps(float dt, const Paper::ClientSession &session) {
+    if (!m_audio) {
+      return;
+    }
+    const auto step = [&](float &timer, const Paper::PlayerState &s, bool alive, bool local,
+                          const glm::vec3 &at) {
+      const float speed = std::hypot(s.velocity.x, s.velocity.z);
+      // Walking (shift) and crouching are silent, like in CS.
+      const bool loud = alive && s.onGround && !s.ducked && speed > 135.0F;
+      timer = loud ? timer - dt : 0.0F;
+      if (loud && timer <= 0.0F) {
+        timer = 0.35F;
+        if (local) {
+          m_audio->play2D(m_step, 0.35F);
+        } else {
+          m_audio->play(m_step, at, 0.9F);
+        }
+      }
+    };
+    step(m_localStepTimer, session.predicted(), session.vitals().alive, true, glm::vec3(0.0F));
+    for (const Paper::NetPlayer &p : session.remotePlayers()) {
+      step(m_remoteStepTimer[p.slot], p.state, p.vitals.alive, false, p.state.origin);
+    }
+  }
+
   void handle(const Paper::GameEvent &e, const Paper::ClientSession &session) {
     switch (e.type) {
     case Paper::GameEvent::Type::Shot:
       spawnTracer(e.from, e.to);
+      playShot(e.weapon, session, e.from, /*own=*/false);
       break;
     case Paper::GameEvent::Type::Hit:
       if (e.actor == session.slot()) {
         m_hitMarker = 0.25F;
         m_hitWasKill = false;
+        if (m_audio) {
+          m_audio->play2D(m_hitSound, 0.6F, e.headshot ? 1.4F : 1.0F);
+        }
       }
       break;
     case Paper::GameEvent::Type::Kill: {
@@ -235,6 +320,12 @@ private:
   }
 
   Paper::Scene &m_scene;
+  Paper::AudioEngine *m_audio = nullptr;
+  Paper::SoundId m_rifle = 0, m_pistol = 0, m_sniper = 0, m_knife = 0, m_step = 0;
+  Paper::SoundId m_impactSound = 0, m_hitSound = 0, m_reloadSound = 0;
+  float m_localStepTimer = 0.0F;
+  std::array<float, Paper::kMaxPlayerSlots> m_remoteStepTimer{};
+  bool m_wasReloading = false;
   entt::entity m_gun;
   entt::entity m_flash;
   std::vector<Timed> m_tracers;

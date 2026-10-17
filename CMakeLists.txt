@@ -65,6 +65,13 @@ FetchContent_Declare(enet
   GIT_TAG        v1.3.18)
 set(ENET_STATIC ON CACHE BOOL "" FORCE)
 
+# miniaudio is a single header; it has a CMakeLists we do not want, so only
+# fetch it (SOURCE_SUBDIR points at a folder that does not exist).
+FetchContent_Declare(miniaudio
+  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+  GIT_TAG        0.11.25
+  SOURCE_SUBDIR  do_not_build)
+
 # Dear ImGui has no CMake build; core/CMakeLists.txt builds it from source.
 FetchContent_Declare(imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -78,13 +85,14 @@ if(PAPER_ENABLE_PROFILER)
   FetchContent_MakeAvailable(tracy)
 endif()
 
-FetchContent_MakeAvailable(enet nlohmann_json imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
+FetchContent_MakeAvailable(miniaudio enet nlohmann_json imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
 
 enable_testing()
 
 add_subdirectory(base)
 add_subdirectory(game)
 add_subdirectory(net)
+add_subdirectory(audio)
 add_subdirectory(core)
 add_subdirectory(sandbox)
 add_subdirectory(client)

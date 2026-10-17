@@ -1,4 +1,5 @@
 #include "local_player.h"
+#include "audio/audio.h"
 #include "combat_view.h"
 #include "movement_hud.h"
 #include "net_hud.h"
@@ -170,6 +171,7 @@ int main(int argc, char **argv) {
   std::vector<entt::entity> remoteEntities;
   NetHud netHud;
   std::unique_ptr<CombatView> combatView;
+  std::unique_ptr<Paper::AudioEngine> audio;
   const auto netStart = std::chrono::steady_clock::now();
   if (!connectTo.empty()) {
     const auto colon = connectTo.find(':');
@@ -190,6 +192,13 @@ int main(int argc, char **argv) {
                                                      movementCvars.params(), playerName);
     player.setSession(session.get());
     spdlog::info("connecting to {}:{}", host, port);
+    if (screenshotPath == nullptr) {
+      if (auto engine = Paper::AudioEngine::create()) {
+        audio = std::move(*engine);
+      } else {
+        spdlog::warn("audio disabled: {}", engine.error().message);
+      }
+    }
 
     Paper::BrushDesc hullBrush = Paper::boxBrush(Paper::kStandingHull.mins, Paper::kStandingHull.maxs);
     Paper::MapData hullMap;
@@ -216,6 +225,7 @@ int main(int argc, char **argv) {
         scene, CombatView::Assets{cubeMesh, makeMaterial({0.15F, 0.15F, 0.17F}, glm::vec3(0.0F)),
                                   makeMaterial({0.1F, 0.1F, 0.1F}, {2.5F, 2.0F, 0.8F}),
                                   makeMaterial({0.1F, 0.1F, 0.1F}, {3.0F, 1.6F, 0.4F})});
+    combatView->setAudio(audio.get());
     meshHandles.push_back(hullMesh);
     for (std::uint32_t i = 0; i < Paper::kMaxPlayerSlots; ++i) {
       const auto e = scene.createEntity();

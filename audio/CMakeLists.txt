@@ -1,0 +1,16 @@
+# 3D positional audio on miniaudio. No rendering or windowing dependencies.
+add_library(audio STATIC src/audio.cpp src/synth.cpp)
+target_include_directories(audio PUBLIC include)
+target_include_directories(audio SYSTEM PRIVATE ${miniaudio_SOURCE_DIR})
+target_link_libraries(audio PUBLIC base)
+target_compile_options(audio PRIVATE -Wall -Wextra -Wpedantic)
+set_source_files_properties(src/audio.cpp PROPERTIES COMPILE_OPTIONS "-w")
+if(APPLE)
+  target_link_libraries(audio PRIVATE "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
+elseif(UNIX)
+  target_link_libraries(audio PRIVATE ${CMAKE_DL_LIBS} pthread m)
+endif()
+
+add_executable(audio_tests tests/main.cpp tests/audio_test.cpp)
+target_link_libraries(audio_tests PRIVATE audio doctest::doctest)
+add_test(NAME audio_tests COMMAND audio_tests)
