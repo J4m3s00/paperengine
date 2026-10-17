@@ -33,6 +33,9 @@ struct CombatState {
   float extraSpread = 0.0F;
   // View punch in degrees: x = pitch (up), y = yaw (left).
   glm::vec2 punch{0.0F};
+  // Where the punch is heading: the pattern position of the last shot. The
+  // punch follows it smoothly instead of jumping.
+  glm::vec2 punchTarget{0.0F};
 
   [[nodiscard]] bool reloading() const { return reloadEnd != 0; }
 };

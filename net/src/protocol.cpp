@@ -210,6 +210,8 @@ void writeCombat(BitWriter &w, const CombatState &s, std::int64_t now) {
   w.writeFloat(s.extraSpread);
   w.writeFloat(s.punch.x);
   w.writeFloat(s.punch.y);
+  w.writeFloat(s.punchTarget.x);
+  w.writeFloat(s.punchTarget.y);
 }
 CombatState readCombat(BitReader &r, std::int64_t now) {
   CombatState s;
@@ -229,6 +231,8 @@ CombatState readCombat(BitReader &r, std::int64_t now) {
   s.extraSpread = r.readFloat();
   s.punch.x = r.readFloat();
   s.punch.y = r.readFloat();
+  s.punchTarget.x = r.readFloat();
+  s.punchTarget.y = r.readFloat();
   return s;
 }
 
@@ -266,7 +270,8 @@ bool combatEquivalent(const CombatState &a, const CombatState &b, std::uint32_t 
          future(a.reloadEnd) == future(b.reloadEnd) && future(a.drawEnd) == future(b.drawEnd) &&
          shotAt(a) == shotAt(b) && std::min<int>(a.shotIndex, 255) == std::min<int>(b.shotIndex, 255) &&
          a.attackHeld == b.attackHeld && std::fabs(a.extraSpread - b.extraSpread) < 1e-4F &&
-         glm::distance(a.punch, b.punch) < 1e-4F;
+         glm::distance(a.punch, b.punch) < 1e-4F &&
+         glm::distance(a.punchTarget, b.punchTarget) < 1e-4F;
 }
 
 std::vector<std::uint8_t> encode(const HelloMsg &msg) {

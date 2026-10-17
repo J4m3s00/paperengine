@@ -37,6 +37,9 @@ struct RecoilDef {
   float resetTime = 0.4F;
   // Degrees per second the punch returns to zero while not shooting.
   float recovery = 30.0F;
+  // Time constant (seconds) of the view kick following each shot's pattern
+  // position: smaller is snappier.
+  float smoothing = 0.04F;
 };
 
 struct WeaponDef {

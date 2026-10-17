@@ -152,20 +152,21 @@ TEST_CASE("the spray pattern follows the data and resets after a pause") {
   for (std::size_t shot = 0; shot < 12; ++shot) {
     // Wait until the next shot, then check the punch it produced.
     while (!s.tick([] { UserCmd c; c.attack = true; return c; }()).fired) {}
-    CHECK(s.state.punch.x == doctest::Approx(pattern[shot].x));
-    CHECK(s.state.punch.y == doctest::Approx(pattern[shot].y));
+    CHECK(s.state.punchTarget.x == doctest::Approx(pattern[shot].x));
+    CHECK(s.state.punchTarget.y == doctest::Approx(pattern[shot].y));
   }
   s.idle(128); // one second pause
   CHECK(s.state.shotIndex == 0);
-  CHECK(s.state.punch.x == doctest::Approx(0.0F).epsilon(0.01));
+  CHECK(std::fabs(s.state.punch.x) < 0.01F);
 }
 
 TEST_CASE("the punch recovers gradually when you stop") {
   Shooter s;
-  s.hold(40);
+  s.hold(80);
+  REQUIRE(s.state.punch.x > 5.0F);
+  s.idle(8);
   const float before = s.state.punch.x;
-  REQUIRE(before > 5.0F);
-  s.idle(16);
+  s.idle(8);
   CHECK(s.state.punch.x < before);
   CHECK(s.state.punch.x > 0.0F);
 }
@@ -175,7 +176,7 @@ TEST_CASE("the spray goes past the pattern's end on the last entry") {
   s.state.ammo[kAk].clip = 100;
   s.hold(128 * 5);
   const auto &pattern = db().at(kAk).recoil.pattern;
-  CHECK(s.state.punch.x == doctest::Approx(pattern.back().x));
+  CHECK(s.state.punchTarget.x == doctest::Approx(pattern.back().x));
 }
 
 TEST_CASE("inaccuracy: standing < running < airborne, crouching is best") {
@@ -259,6 +260,7 @@ TEST_CASE("the knife needs no ammo and does not recoil") {
   s.hold(128);
   CHECK(s.shots >= 2);
   CHECK(s.state.punch == glm::vec2(0.0F));
+  CHECK(s.state.punchTarget == glm::vec2(0.0F));
   CHECK(s.state.ammo[kKnife].clip == 0);
 }
 
@@ -334,8 +336,8 @@ TEST_CASE("every gun follows its own spray pattern shot by shot") {
       }
       REQUIRE(guard < 400);
       const auto &expected = pattern[std::min(shot, pattern.size() - 1)];
-      CHECK(s.state.punch.x == doctest::Approx(expected.x));
-      CHECK(s.state.punch.y == doctest::Approx(expected.y));
+      CHECK(s.state.punchTarget.x == doctest::Approx(expected.x));
+      CHECK(s.state.punchTarget.y == doctest::Approx(expected.y));
     }
   }
 }
@@ -364,4 +366,41 @@ TEST_CASE("golden weapon stream: fire rate, ammo and recoil do not change by acc
   CHECK(s.state.ammo[kAk].clip == 27);
   CHECK(s.state.ammo[kAk].reserve == 60);
   CHECK(s.state.ammo[kGlock].clip == 18);
+}
+
+TEST_CASE("the view kick is smooth: no tick moves the punch by much, and it settles on the pattern") {
+  Shooter s;
+  s.state.ammo[kAk].clip = 100;
+  UserCmd c;
+  c.attack = true;
+  glm::vec2 prev = s.state.punch;
+  float biggestStep = 0.0F;
+  for (int t = 0; t < 128; ++t) {
+    s.tick(c);
+    biggestStep = std::max(biggestStep, glm::distance(prev, s.state.punch));
+    prev = s.state.punch;
+  }
+  // A pattern step is ~2 degrees; it is spread over several ticks.
+  CHECK(biggestStep < 0.7F);
+  // Between shots the punch has (nearly) arrived at the last pattern position.
+  s.idle(0);
+  CHECK(glm::distance(s.state.punch, s.state.punchTarget) < 2.5F);
+}
+
+TEST_CASE("the bullet leaves where the view points, then the kick builds up") {
+  Shooter s;
+  UserCmd c;
+  c.attack = true;
+  const auto first = s.tick(c);
+  CHECK(glm::degrees(std::acos(std::min(1.0F, glm::dot(viewDirection(0, 0), first.shot.direction)))) < 0.31F);
+  // Wait for the second shot: its kick has not happened yet when it leaves.
+  while (!s.tick(c).fired) {}
+  const float target = s.state.punchTarget.x;
+  REQUIRE(target > 1.0F);
+  CHECK(s.state.punch.x < target * 0.2F);
+  s.idle(3);
+  CHECK(s.state.punch.x > 0.0F);
+  CHECK(s.state.punch.x < target);
+  s.idle(10);
+  CHECK(s.state.punch.x > target * 0.5F); // arrived
 }

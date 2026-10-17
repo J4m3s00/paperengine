@@ -78,7 +78,7 @@ int runInProcess(const Options &opt, const CollisionWorld &world, const MapData 
     auto &ep = net.addEndpoint();
     clients.push_back(std::make_unique<ClientSession>(ep, serverEp.id(), world, weapons, config.movement,
                                                       "bot" + std::to_string(i)));
-    brains.emplace_back(opt.seed * 1000 + static_cast<std::uint64_t>(i));
+    brains.emplace_back(opt.seed * 1000 + static_cast<std::uint64_t>(i), true);
     ep.connect(serverEp.id());
   }
 
@@ -142,7 +142,7 @@ int runRealtime(const Options &opt, const CollisionWorld &world, const WeaponDb 
     auto session = std::make_unique<ClientSession>(**transport, *peer, world, weapons, cvarsHolder.params(),
                                                    "bot" + std::to_string(i));
     bots.push_back({std::move(*transport), std::move(session),
-                    BotBrain(opt.seed * 1000 + static_cast<std::uint64_t>(i))});
+                    BotBrain(opt.seed * 1000 + static_cast<std::uint64_t>(i), true)});
   }
   const auto start = Clock::now();
   auto next = start;

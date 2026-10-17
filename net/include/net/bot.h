@@ -9,7 +9,9 @@ namespace Paper {
 // jumps and crouches. Deterministic for a given seed.
 class BotBrain {
 public:
-  explicit BotBrain(std::uint64_t seed) : m_state(seed * 0x9E3779B97F4A7C15ULL + 1) {}
+  // `combat`: also shoot, reload and switch weapons (soak tests).
+  explicit BotBrain(std::uint64_t seed, bool combat = false)
+      : m_state(seed * 0x9E3779B97F4A7C15ULL + 1), m_combat(combat) {}
 
   [[nodiscard]] UserCmd next() {
     if (m_ticksLeft <= 0) {
@@ -49,12 +51,14 @@ private:
     m_duck = random() % 8 == 0;
     m_walk = random() % 8 == 0;
     m_jumpEvery = random() % 3 == 0 ? 40 : 0;
-    m_shooting = random() % 2 == 0;
-    m_reloadAt = random() % 4 == 0 ? 10 : -1;
-    m_nextWeapon = random() % 3 == 0 ? static_cast<std::uint8_t>(1 + random() % 7) : 0;
+    const std::uint64_t r = random();
+    m_shooting = m_combat && r % 2 == 0;
+    m_reloadAt = m_combat && (r >> 8) % 4 == 0 ? 10 : -1;
+    m_nextWeapon = m_combat && (r >> 16) % 3 == 0 ? static_cast<std::uint8_t>(1 + (r >> 24) % 7) : 0;
   }
 
   std::uint64_t m_state;
+  bool m_combat;
   int m_ticksLeft = 0;
   float m_yaw = 0.0F;
   float m_turn = 0.0F;

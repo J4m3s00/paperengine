@@ -61,9 +61,13 @@ std::expected<WeaponDef, Error> parseWeapon(const std::string &text) {
       }
       w.recoil.resetTime = get(*it, "resetTime", 0.4F);
       w.recoil.recovery = get(*it, "recovery", 30.0F);
+      w.recoil.smoothing = get(*it, "smoothing", 0.04F);
     }
   } catch (const json::exception &e) {
     return std::unexpected(invalid(std::string("weapon file: ") + e.what()));
+  }
+  if (w.recoil.smoothing <= 0.0F) {
+    return std::unexpected(invalid(w.id + ": recoil smoothing must be positive"));
   }
   if (w.id.empty() || w.cycleTime <= 0.0F || w.damage <= 0.0F || w.maxSpeed <= 0.0F ||
       w.rangeModifier <= 0.0F || w.range <= 0.0F) {

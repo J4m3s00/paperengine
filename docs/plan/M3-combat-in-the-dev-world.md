@@ -6,6 +6,7 @@
 - `game/weapon.h`: shared weapon state machine (fire rate in 1/256-tick fixed point on the usercmd clock, ammo, reload, draw, semi/auto, spray pattern, stance/move/air/per-shot inaccuracy, seeded spread), damage and armor math.
 - Server (`net/server.h`): hitscan resolved against rewound hitboxes after all players moved, world occlusion, armor (legs unprotected), death/respawn (3 s), server bots (`addBot`, stationary or scripted-moving), reliable `GameEvent`s (Shot to everyone but the shooter, Hit to attacker and victim, Kill to all). Snapshots carry health/armor/alive/weapon for everyone and the recipient's full weapon state.
 - Client: `ClientSession` predicts weapons with reconciliation (same `stepWeapon`); `client/combat_view.h` draws view model (placeholder box), tracers, impact markers, crosshair, hit/kill markers, HUD, kill feed; `audio/` (miniaudio, 32 voices, 3D, procedural placeholder sounds) plays shots, footsteps, impacts, hit ticks, reload.
+- Recoil kick is smooth: each shot sets `punchTarget` (the pattern position) and `punch` follows it exponentially (`recoil.smoothing`, default 0.04 s, per weapon in the JSON); the bullet leaves along the view as it is when the trigger fires, then the kick builds up.
 - Controls online: mouse 1 fire, R reload, 1-7 weapons; offline respawn moved to T.
 
 Measured / verified:

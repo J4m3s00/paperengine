@@ -64,6 +64,7 @@ WeaponEvents stepWeapon(CombatState &s, const UserCmd &cmd, const PlayerState &m
     s.drawEnd = now + toSub(db.at(s.weapon).drawTime);
     s.shotIndex = 0;
     s.punch = glm::vec2(0.0F);
+    s.punchTarget = glm::vec2(0.0F);
     ev.switched = true;
   }
   const WeaponDef &w = db.at(s.weapon);
@@ -75,10 +76,12 @@ WeaponEvents stepWeapon(CombatState &s, const UserCmd &cmd, const PlayerState &m
     s.shotIndex = 0;
   }
   if (now - s.lastShot > toSub(w.cycleTime)) {
-    const float len = glm::length(s.punch);
+    const float len = glm::length(s.punchTarget);
     const float step = w.recoil.recovery * dt;
-    s.punch = len <= step ? glm::vec2(0.0F) : s.punch * ((len - step) / len);
+    s.punchTarget = len <= step ? glm::vec2(0.0F) : s.punchTarget * ((len - step) / len);
   }
+  // The visible punch eases toward its target (exponential, frame-rate free).
+  s.punch += (s.punchTarget - s.punch) * (1.0F - std::exp(-dt / w.recoil.smoothing));
 
   if (s.reloadEnd != 0 && now >= s.reloadEnd) {
     const std::int32_t take = std::min(w.magazine - ammo.clip, ammo.reserve);
@@ -118,12 +121,14 @@ WeaponEvents stepWeapon(CombatState &s, const UserCmd &cmd, const PlayerState &m
       float yaw = cmd.yaw;
       if (!w.melee) {
         const auto &pattern = w.recoil.pattern;
-        s.punch = pattern[std::min<std::size_t>(s.shotIndex, pattern.size() - 1)];
+        // This bullet leaves where the view is now; the kick it causes builds
+        // up over the next few ticks.
+        pitch += glm::radians(s.punch.x);
+        yaw += glm::radians(s.punch.y);
+        s.punchTarget = pattern[std::min<std::size_t>(s.shotIndex, pattern.size() - 1)];
         ++s.shotIndex;
         spread = baseInaccuracy(w, move) + s.extraSpread;
         s.extraSpread = std::min(s.extraSpread + w.inaccuracy.perShot, w.inaccuracy.maxExtra);
-        pitch += glm::radians(s.punch.x);
-        yaw += glm::radians(s.punch.y);
       }
       s.lastShot = now;
 

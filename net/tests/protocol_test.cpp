@@ -237,6 +237,7 @@ TEST_CASE("the recipient's weapon state survives the wire") {
   s.self.attackHeld = true;
   s.self.extraSpread = 1.25F;
   s.self.punch = {7.5F, -2.0F};
+  s.self.punchTarget = {9.0F, -2.5F};
   const auto decoded = decodeSnapshot(encode(s, nullptr), nullptr);
   REQUIRE(decoded.has_value());
   REQUIRE(decoded->hasSelf);
@@ -244,6 +245,7 @@ TEST_CASE("the recipient's weapon state survives the wire") {
   CHECK(decoded->self.nextAttack == s.self.nextAttack);
   CHECK(decoded->self.reloadEnd == s.self.reloadEnd);
   CHECK(decoded->self.punch == s.self.punch);
+  CHECK(decoded->self.punchTarget == s.self.punchTarget);
   // A weapon state that differs is noticed.
   CombatState other = decoded->self;
   other.ammo[0].clip = 16;
