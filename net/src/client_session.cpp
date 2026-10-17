@@ -144,6 +144,12 @@ void ClientSession::receive() {
 
 void ClientSession::onEvent(std::span<const std::uint8_t> packet) {
   if (const auto event = decodeEvent(packet)) {
+    if (event->type == GameEvent::Type::Spawn) {
+      if (event->actor == m_slot) {
+        m_spawnYaw = event->from.x; // for the view, not for the effects
+      }
+      return;
+    }
     m_events.push_back(*event);
   }
 }

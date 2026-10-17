@@ -453,7 +453,7 @@ std::expected<GameEvent, Error> decodeEvent(std::span<const std::uint8_t> packet
   e.headshot = r.readBool();
   e.from = {r.readFloat(), r.readFloat(), r.readFloat()};
   e.to = {r.readFloat(), r.readFloat(), r.readFloat()};
-  if (!typeOk || !r.ok() || type > 5) {
+  if (!typeOk || !r.ok() || type > 6) {
     return std::unexpected(bad("event"));
   }
   e.type = static_cast<GameEvent::Type>(type);

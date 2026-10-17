@@ -1,5 +1,8 @@
 #pragma once
 
+#include "character.h"
+#include "weapon_models.h"
+
 #include "audio/audio.h"
 #include "audio/synth.h"
 #include "core/renderer/camera.h"
@@ -17,6 +20,7 @@
 #include <array>
 #include <deque>
 #include <string>
+#include <utility>
 #include <vector>
 
 // What combat looks like on the client: a placeholder view model, tracers and
@@ -33,6 +37,11 @@ public:
     Paper::MaterialHandle teamT;
     Paper::MaterialHandle teamCT;
   };
+
+  // The gun models for the view model; without them the placeholder box shows.
+  void setWeaponModels(WeaponModels *models) { m_models = models; }
+  // Players whose shots arrived since the last call (for their animation).
+  [[nodiscard]] std::vector<std::uint8_t> takeShooters() { return std::exchange(m_shooters, {}); }
 
   // Optional: without it (no sound device) everything is silent.
   void setAudio(Paper::AudioEngine *audio) {
@@ -70,6 +79,11 @@ public:
     for (const entt::entity e : {m_gun, m_flash}) {
       transform(e).scale = glm::vec3(0.0F);
     }
+    for (const entt::entity e : m_viewGuns) {
+      if (e != entt::null) {
+        transform(e).scale = glm::vec3(0.0F);
+      }
+    }
     for (auto &pair : m_markers) {
       transform(pair.first).scale = glm::vec3(0.0F);
       transform(pair.second).scale = glm::vec3(0.0F);
@@ -96,7 +110,25 @@ public:
     const glm::vec3 right = view.rotation * glm::vec3(1, 0, 0);
     const glm::vec3 up = view.rotation * glm::vec3(0, 1, 0);
     const glm::vec3 forward = view.rotation * glm::vec3(0, 0, -1);
-    const glm::vec3 muzzle = view.position + right * 3.5F - up * 3.5F + forward * 18.0F;
+    // The view model sits low and to the right; its barrel points along the view.
+    const std::size_t weaponIndex = std::min<std::size_t>(session.combat().weapon, session.weapons().size() - 1);
+    const Paper::WeaponDef &held = session.weapons().at(weaponIndex);
+    const glm::vec3 gunAt = view.position + right * 6.0F - up * 6.0F + forward * (14.0F - 2.5F * m_kick);
+    glm::vec3 muzzle = view.position + right * 3.5F - up * 3.5F + forward * 18.0F;
+    entt::entity modelGun = entt::null;
+    if (m_models != nullptr) {
+      if (m_viewGuns[weaponIndex] == entt::null) {
+        m_viewGuns[weaponIndex] = m_models->spawn(weaponIndex);
+      }
+      modelGun = m_viewGuns[weaponIndex];
+    }
+    // glTF guns point their barrel along +X; the view looks along -Z.
+    const glm::mat4 gunMatrix = glm::translate(glm::mat4(1.0F), gunAt) * glm::mat4_cast(view.rotation) *
+                                glm::rotate(glm::mat4(1.0F), glm::radians(90.0F), glm::vec3(0, 1, 0)) *
+                                glm::scale(glm::mat4(1.0F), glm::vec3(kViewModelScale));
+    if (modelGun != entt::null) {
+      muzzle = glm::vec3(gunMatrix * glm::vec4(held.muzzle, 1.0F));
+    }
 
     for (const Paper::ShotInfo &shot : session.takeLocalShots()) {
       const Paper::WeaponDef &def = session.weapons().at(shot.weapon);
@@ -143,10 +175,22 @@ public:
     fade(m_impacts, dt);
 
     const bool showGun = session.playing() && session.vitals().alive;
-    transform(m_gun).position = view.position + right * 4.0F - up * 4.0F +
-                                forward * (14.0F - 2.0F * m_kick);
-    transform(m_gun).rotation = view.rotation;
-    transform(m_gun).scale = showGun ? glm::vec3(1.4F, 2.2F, 10.0F) : glm::vec3(0.0F);
+    for (std::size_t i = 0; i < m_viewGuns.size(); ++i) {
+      if (m_viewGuns[i] != entt::null && (i != weaponIndex || !showGun)) {
+        transform(m_viewGuns[i]).scale = glm::vec3(0.0F);
+      }
+    }
+    if (modelGun != entt::null) {
+      if (showGun) {
+        setTransformFromMatrix(transform(modelGun), gunMatrix);
+      }
+      transform(m_gun).scale = glm::vec3(0.0F); // the box is only a stand-in
+    } else {
+      transform(m_gun).position = view.position + right * 4.0F - up * 4.0F +
+                                  forward * (14.0F - 2.0F * m_kick);
+      transform(m_gun).rotation = view.rotation;
+      transform(m_gun).scale = showGun ? glm::vec3(1.4F, 2.2F, 10.0F) : glm::vec3(0.0F);
+    }
     transform(m_flash).position = muzzle + forward * 2.0F;
     transform(m_flash).rotation = view.rotation;
     transform(m_flash).scale = showGun && m_flashLeft > 0.0F ? glm::vec3(3.0F) : glm::vec3(0.0F);
@@ -431,6 +475,7 @@ private:
     switch (e.type) {
     case Paper::GameEvent::Type::Shot:
       spawnTracer(e.from, e.to);
+      m_shooters.push_back(e.actor);
       playShot(e.weapon, session, e.from, /*own=*/false);
       break;
     case Paper::GameEvent::Type::Hit:
@@ -471,6 +516,14 @@ private:
   }
 
   Paper::Scene &m_scene;
+  WeaponModels *m_models = nullptr;
+  std::array<entt::entity, Paper::kMaxWeapons> m_viewGuns = [] {
+    std::array<entt::entity, Paper::kMaxWeapons> a;
+    a.fill(entt::null);
+    return a;
+  }();
+  std::vector<std::uint8_t> m_shooters;
+  static constexpr float kViewModelScale = 24.0F;
   Banner m_banner;
   std::array<std::pair<entt::entity, entt::entity>, Paper::kMaxPlayerSlots> m_markers;
   Paper::AudioEngine *m_audio = nullptr;

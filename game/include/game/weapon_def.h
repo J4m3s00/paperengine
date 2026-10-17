@@ -67,6 +67,12 @@ struct WeaponDef {
 
   InaccuracyDef inaccuracy;
   RecoilDef recoil;
+
+  // Presentation (the server ignores it): the 3D model file stem in the guns
+  // folder (empty = none) and where the bullets leave it, in the model's own
+  // space (meters, +X along the barrel).
+  std::string model;
+  glm::vec3 muzzle{0.0F};
 };
 
 // All weapons, sorted by `order`. The index of a weapon is its position here

@@ -163,6 +163,11 @@ void Server::handleHello(PeerId peer, std::span<const std::uint8_t> packet) {
   m_transport.send(peer, Channel::Reliable,
                    encode(AcceptMsg{slot, m_config.tickRate, m_config.snapshotRate, m_tick,
                                     m_config.map, m_config.mapChecksum}));
+  GameEvent facing;
+  facing.type = GameEvent::Type::Spawn;
+  facing.actor = slot;
+  facing.from = {spawn.yaw, 0.0F, 0.0F};
+  sendEvent(slot, facing);
 }
 
 void Server::handleUserCmds(Client &client, std::span<const std::uint8_t> packet) {
@@ -219,6 +224,9 @@ void Server::simulate(std::uint8_t slot, Client &client) {
   bool real = false;
   if (client.isBot) {
     cmd = client.brain ? client.brain->next() : UserCmd{};
+    if (!client.brain) {
+      cmd.yaw = client.yaw; // a standing bot keeps facing where it spawned
+    }
     seq = ++client.botSeq;
     client.executedSeq = seq;
     real = true;
@@ -384,6 +392,12 @@ void Server::respawn(std::uint8_t slot, Client &client, const SpawnPoint &spawn)
   client.combat = makeLoadout(m_weapons);
   client.vitals = Vitals{};
   m_lag.clear(slot);
+  // Tell the player which way it now faces (the view is the client's).
+  GameEvent e;
+  e.type = GameEvent::Type::Spawn;
+  e.actor = slot;
+  e.from = {spawn.yaw, 0.0F, 0.0F};
+  sendEvent(slot, e);
 }
 
 // A new round: everyone is put back at their team's spawns with full health.

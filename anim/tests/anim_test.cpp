@@ -203,3 +203,17 @@ TEST_CASE("invalid clips are ignored safely") {
   CHECK(lib.findClip("Bend") == 1);
   CHECK(lib.findClip("nope") == -1);
 }
+
+TEST_CASE("a looping overlay keeps playing until replaced or stopped") {
+  const AnimationLibrary lib = makeLibrary();
+  Animator anim(lib);
+  anim.play(0);
+  anim.playOverlay(1, maskBelow(lib.skeleton, "arm"), 0.1F, true);
+  anim.update(0.5F);
+  anim.update(5.0F); // far past the 1 s clip
+  CHECK(anim.overlayActive());
+  CHECK(anim.overlayClip() == 1);
+  CHECK(glm::angle(anim.pose()[1].rotation) > 0.0F);
+  anim.playOverlay(-1, {});
+  CHECK_FALSE(anim.overlayActive());
+}

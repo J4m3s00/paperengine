@@ -77,7 +77,7 @@ struct NetPlayer {
 // Something that happened, sent reliably to the clients that care (effects,
 // hit markers, kill feed).
 struct GameEvent {
-  enum class Type : std::uint8_t { Shot, Hit, Kill, RoundStart, RoundEnd, MatchEnd };
+  enum class Type : std::uint8_t { Shot, Hit, Kill, RoundStart, RoundEnd, MatchEnd, Spawn };
   Type type = Type::Shot;
   // Shooter / attacker / killer. For RoundEnd and MatchEnd the winning Team.
   std::uint8_t actor = 0;
@@ -87,6 +87,7 @@ struct GameEvent {
   // Health damage of a Hit.
   std::uint8_t damage = 0;
   bool headshot = false;
+  // Spawn (sent to the player only): `from.x` is the yaw to face.
   // Shot: muzzle and end point of the bullet. Hit: unused and impact point.
   glm::vec3 from{0.0F};
   glm::vec3 to{0.0F};

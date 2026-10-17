@@ -81,3 +81,16 @@ TEST_CASE("adding a weapon is just another file") {
   CHECK(db->size() == 2);
   CHECK(db->indexOf("y") == 1);
 }
+
+TEST_CASE("weapons can name a 3D model and muzzle for the client") {
+  const WeaponDb db = loadSlice();
+  const WeaponDef &ak = db.at(static_cast<std::size_t>(db.indexOf("ak47")));
+  CHECK(ak.model == "ak47");
+  CHECK(ak.muzzle.x > 0.3F);
+  CHECK(db.at(static_cast<std::size_t>(db.indexOf("knife"))).model.empty());
+  const auto parsed = WeaponDb::parse({R"({"id":"x","order":1,"slot":"primary","damage":10,"cycleTime":0.1,
+    "magazine":5,"reloadTime":1.0,"recoil":{"pattern":[[0,0]]},"model":"m","muzzle":[1,2,3]})"});
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->at(0).model == "m");
+  CHECK(parsed->at(0).muzzle == glm::vec3(1, 2, 3));
+}

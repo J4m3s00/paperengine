@@ -183,7 +183,7 @@ void Animator::playKeepingPhase(int clip, float fadeSeconds) {
   m_time = phase * to.duration;
 }
 
-void Animator::playOverlay(int clip, std::vector<float> mask, float fadeSeconds) {
+void Animator::playOverlay(int clip, std::vector<float> mask, float fadeSeconds, bool loop) {
   if (clip < 0 || static_cast<std::size_t>(clip) >= m_library->clips.size()) {
     m_overlay = -1;
     return;
@@ -191,6 +191,7 @@ void Animator::playOverlay(int clip, std::vector<float> mask, float fadeSeconds)
   m_overlay = clip;
   m_overlayTime = 0.0F;
   m_overlayFade = std::max(fadeSeconds, 1e-3F);
+  m_overlayLoop = loop;
   m_overlayMask = std::move(mask);
 }
 
@@ -223,13 +224,16 @@ void Animator::update(float dt) {
   if (m_overlay >= 0) {
     const AnimationClip &oc = m_library->clips[static_cast<std::size_t>(m_overlay)];
     m_overlayTime += dt;
-    if (m_overlayTime >= oc.duration) {
+    if (!m_overlayLoop && m_overlayTime >= oc.duration) {
       m_overlay = -1;
     } else {
-      sampleClip(sk, oc, m_overlayTime, m_scratchB);
-      // Fade in at the start and out at the end of the overlay clip.
+      // A looping overlay wraps (the clip's own loop flag does not matter).
+      const float t = m_overlayLoop && oc.duration > 0.0F ? std::fmod(m_overlayTime, oc.duration)
+                                                          : m_overlayTime;
+      sampleClip(sk, oc, t, m_scratchB);
+      // Fade in at the start and out at the end of a one-shot overlay.
       const float in = std::min(1.0F, m_overlayTime / m_overlayFade);
-      const float out = std::min(1.0F, (oc.duration - m_overlayTime) / m_overlayFade);
+      const float out = m_overlayLoop ? 1.0F : std::min(1.0F, (oc.duration - m_overlayTime) / m_overlayFade);
       const float w = std::min(in, out);
       std::vector<float> weights(m_overlayMask);
       for (float &v : weights) {

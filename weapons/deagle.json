@@ -34,5 +34,7 @@
   ],
   "resetTime": 0.5,
   "recovery": 25.0
- }
+ },
+ "model": "mac10",
+ "muzzle": [0.124, 0.02, 0]
 }

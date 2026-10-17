@@ -74,6 +74,14 @@ public:
                            -kMaxPitch, kMaxPitch);
     }
 
+    // The server (re)placed us: face the way its spawn point says.
+    if (m_session) {
+      if (const auto yaw = m_session->takeSpawnYaw()) {
+        m_yaw = *yaw;
+        m_pitch = 0.0F;
+      }
+    }
+
     // Keys are sampled once per frame and held for every tick of that frame.
     Paper::UserCmd cmd;
     cmd.yaw = m_yaw;

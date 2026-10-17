@@ -30,5 +30,7 @@
   ],
   "resetTime": 1.0,
   "recovery": 20.0
- }
+ },
+ "model": "awp",
+ "muzzle": [0.784, 0.04, 0]
 }

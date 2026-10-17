@@ -39,5 +39,7 @@
   ],
   "resetTime": 0.3,
   "recovery": 30.0
- }
+ },
+ "model": "pew",
+ "muzzle": [0.068, 0.012, 0]
 }

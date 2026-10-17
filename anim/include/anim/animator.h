@@ -19,9 +19,12 @@ public:
   // plays now (walk -> run without a foot pop). Falls back to play().
   void playKeepingPhase(int clip, float fadeSeconds = 0.2F);
 
-  // Plays `clip` once over the joints in `mask` (see maskBelow), fading in
-  // and out; `clip` < 0 stops it.
-  void playOverlay(int clip, std::vector<float> mask, float fadeSeconds = 0.1F);
+  // Plays `clip` over the joints in `mask` (see maskBelow), fading in and, for
+  // a one-shot, out again at its end. With `loop` it repeats until replaced
+  // or stopped (`clip` < 0).
+  void playOverlay(int clip, std::vector<float> mask, float fadeSeconds = 0.1F, bool loop = false);
+  // The overlay clip that plays now, or -1.
+  [[nodiscard]] int overlayClip() const { return m_overlay; }
   void setSpeed(float speed) { m_speed = speed; }
 
   void update(float dt);
@@ -50,6 +53,7 @@ private:
   int m_overlay = -1;
   float m_overlayTime = 0.0F;
   float m_overlayFade = 0.1F;
+  bool m_overlayLoop = false;
   std::vector<float> m_overlayMask;
 
   Pose m_pose;

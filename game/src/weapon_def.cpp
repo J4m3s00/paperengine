@@ -45,6 +45,10 @@ std::expected<WeaponDef, Error> parseWeapon(const std::string &text) {
     w.reserve = get(j, "reserve", 0);
     w.reloadTime = get(j, "reloadTime", 0.0F);
     w.drawTime = get(j, "drawTime", 0.5F);
+    w.model = get<std::string>(j, "model", "");
+    if (const auto it = j.find("muzzle"); it != j.end() && it->is_array() && it->size() == 3) {
+      w.muzzle = {(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()};
+    }
     if (const auto it = j.find("inaccuracy"); it != j.end()) {
       InaccuracyDef &i = w.inaccuracy;
       i.stand = get(*it, "stand", 0.0F);

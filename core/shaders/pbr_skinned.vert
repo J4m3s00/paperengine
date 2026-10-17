@@ -28,10 +28,13 @@ layout(location = 3) out vec4 vTangent;
 
 void main() {
   uint base = uint(gl_InstanceIndex);
-  mat4 skin = palette.joints[base + inJoints.x] * inWeights.x +
-              palette.joints[base + inJoints.y] * inWeights.y +
-              palette.joints[base + inJoints.z] * inWeights.z +
-              palette.joints[base + inJoints.w] * inWeights.w;
+  // Vertices without weights (static meshes drawn with this shader) stay put.
+  mat4 skin = dot(inWeights, vec4(1.0)) > 0.0
+                  ? palette.joints[base + inJoints.x] * inWeights.x +
+                        palette.joints[base + inJoints.y] * inWeights.y +
+                        palette.joints[base + inJoints.z] * inWeights.z +
+                        palette.joints[base + inJoints.w] * inWeights.w
+                  : mat4(1.0);
   vec4 skinned = skin * vec4(inPosition, 1.0);
   vec4 worldPosition = push.model * skinned;
   gl_Position = frame.viewProj * worldPosition;

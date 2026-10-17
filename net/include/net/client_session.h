@@ -8,6 +8,8 @@
 #include "net/transport.h"
 
 #include <deque>
+#include <optional>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -87,6 +89,8 @@ public:
   [[nodiscard]] std::vector<ShotInfo> takeLocalShots();
   // Server events (other players' shots, hits on/by us, kills) since the last call.
   [[nodiscard]] std::vector<GameEvent> takeEvents();
+  // The yaw the server placed us with (join, respawn), once.
+  [[nodiscard]] std::optional<float> takeSpawnYaw() { return std::exchange(m_spawnYaw, std::nullopt); }
 
 private:
   struct Pending {
@@ -124,6 +128,7 @@ private:
   MatchState m_match;
   std::vector<ShotInfo> m_localShots;
   std::vector<GameEvent> m_events;
+  std::optional<float> m_spawnYaw;
   glm::vec3 m_errorOffset{0.0F};
   std::deque<Pending> m_pending;
   std::uint32_t m_nextSeq = 1;

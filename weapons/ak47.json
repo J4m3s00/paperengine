@@ -59,5 +59,7 @@
   ],
   "resetTime": 0.4,
   "recovery": 35.0
- }
+ },
+ "model": "ak47",
+ "muzzle": [0.477, 0.025, 0]
 }

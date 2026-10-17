@@ -1,5 +1,6 @@
 #include "local_player.h"
 #include "audio/audio.h"
+#include "character.h"
 #include "combat_view.h"
 #include "movement_hud.h"
 #include "net_hud.h"
@@ -99,6 +100,7 @@ int main(int argc, char **argv) {
   std::string connectTo;
   std::string playerName = "player";
   bool offlineArg = false;
+  bool noOverlay = false;
   Paper::NetworkConditions simulated; // one-way, applied to both directions
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -112,6 +114,8 @@ int main(int argc, char **argv) {
       connectTo = argv[++i];
     } else if (arg == "--name" && i + 1 < argc) {
       playerName = argv[++i];
+    } else if (arg == "--no-overlay") {
+      noOverlay = true;
     } else if (arg == "--offline") {
       offlineArg = true;
     } else if (arg == "--lag" && i + 1 < argc) {
@@ -129,6 +133,7 @@ int main(int argc, char **argv) {
   auto window = require(Paper::Window::create({.width = 1280, .height = 720, .title = "Paper"}));
   auto renderer = require(Paper::Renderer::create(*window));
   const auto shader = require(renderer->createShader({"pbr.vert.spv", "pbr.frag.spv"}));
+  const auto skinnedShader = require(renderer->createShader({"pbr_skinned.vert.spv", "pbr.frag.spv"}));
   const auto grid = require(renderer->createTexture(makeGrid(256, 4), Paper::ColorSpace::Srgb));
 
   Paper::Scene scene;
@@ -221,7 +226,7 @@ int main(int argc, char **argv) {
   const Paper::WeaponDb weapons = require(Paper::WeaponDb::loadDirectory(Paper::dataDir("weapons", PAPER_WEAPONS_DIR)));
   Paper::MovementCvars movementCvars;
   Paper::DebugOverlay overlay;
-  overlay.setVisible(screenshotPath != nullptr);
+  overlay.setVisible(screenshotPath != nullptr && !noOverlay);
   float lastFrameSeconds = 0.0F;
 
   LocalPlayer player(*world.collision, movementCvars);
@@ -250,6 +255,24 @@ int main(int argc, char **argv) {
                                 fixedMaterial({0.1F, 0.1F, 0.1F}, {3.0F, 1.8F, 0.3F}),
                                 fixedMaterial({0.1F, 0.1F, 0.1F}, {0.4F, 1.4F, 3.0F})});
   combatView.setAudio(audio.get());
+  // Characters and gun models (the art packs); the game works without them.
+  WeaponModels weaponModels(*renderer, scene, shader, weapons);
+  combatView.setWeaponModels(&weaponModels);
+  auto characterAssets = std::make_unique<CharacterAssets>(*renderer, skinnedShader);
+  std::vector<std::unique_ptr<Character>> characters;
+  if (characterAssets->ok()) {
+    for (std::uint32_t slot = 0; slot < Paper::kMaxPlayerSlots; ++slot) {
+      characters.push_back(std::make_unique<Character>(scene, *characterAssets, weaponModels, weapons));
+    }
+  }
+  auto &showHitboxes = Paper::cvars().addBool(
+      "cl_showhitboxes", characters.empty(), "Draw other players as their hitboxes instead of models");
+  const std::pair<const char *, float> gunTuning[] = {
+      {"cl_gunhand_x", 0.0F},  {"cl_gunhand_y", 0.0F},  {"cl_gunhand_z", 0.0F},
+      {"cl_gunhand_rx", 0.0F}, {"cl_gunhand_ry", 0.0F}, {"cl_gunhand_rz", 0.0F}};
+  for (const auto &[name, value] : gunTuning) {
+    Paper::cvars().add<float>(name, value, -360.0F, 360.0F, "Where the weapon sits in the hand (tuning)");
+  }
   // Other players are drawn as their hitboxes, one colored box per hit group,
   // so what you see is exactly what you can hit.
   const glm::vec3 groupColors[] = {{0.9F, 0.15F, 0.15F},  {0.95F, 0.5F, 0.1F},  {0.95F, 0.85F, 0.2F},
@@ -271,6 +294,9 @@ int main(int argc, char **argv) {
   const auto hideRemotes = [&] {
     for (const auto e : remoteEntities) {
       scene.registry().get<Paper::Transform>(e).scale = glm::vec3(0.0F);
+    }
+    for (auto &c : characters) {
+      c->hide();
     }
     combatView.hideAll();
   };
@@ -580,11 +606,26 @@ int main(int argc, char **argv) {
       combatView.update(lastFrameSeconds, player.camera(camera), *session, *world.collision);
       const auto remotes = session->remotePlayers();
       const Paper::FixedHitboxProvider hitboxProvider;
+      for (const std::uint8_t shooter : combatView.takeShooters()) {
+        if (shooter < characters.size()) {
+          characters[shooter]->shot();
+        }
+      }
       for (std::size_t slot = 0; slot < Paper::kMaxPlayerSlots; ++slot) {
         const auto it = std::find_if(remotes.begin(), remotes.end(),
                                      [&](const Paper::NetPlayer &p) { return p.slot == slot; });
         Paper::HitboxSet set;
-        const bool visible = it != remotes.end() && it->vitals.alive;
+        // Models show a player until the death animation is over; the boxes
+        // (cl_showhitboxes) show only the living, exactly what can be hit.
+        const bool present = it != remotes.end();
+        if (slot < characters.size()) {
+          if (present) {
+            characters[slot]->update(lastFrameSeconds, *it);
+          } else {
+            characters[slot]->hide();
+          }
+        }
+        const bool visible = present && it->vitals.alive && (showHitboxes.value() || characters.empty());
         if (visible) {
           hitboxProvider.hitboxes(Paper::poseOf(it->state, it->yaw, it->pitch), set);
         }
