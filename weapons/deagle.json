@@ -1,0 +1,38 @@
+{
+ "id": "deagle",
+ "order": 6,
+ "displayName": "Desert Eagle",
+ "slot": "secondary",
+ "automatic": false,
+ "damage": 63,
+ "armorRatio": 1.864,
+ "headshotMultiplier": 4.0,
+ "range": 4096,
+ "rangeModifier": 0.81,
+ "cycleTime": 0.225,
+ "maxSpeed": 230,
+ "magazine": 7,
+ "reserve": 35,
+ "reloadTime": 2.2,
+ "drawTime": 0.9,
+ "inaccuracy": {
+  "stand": 0.5,
+  "crouch": 0.35,
+  "move": 8.0,
+  "air": 12.0,
+  "perShot": 2.0,
+  "maxExtra": 6.0,
+  "recovery": 3.0
+ },
+ "recoil": {
+  "pattern": [
+   [2.9, -0.2],
+   [5.2, 0.4],
+   [6.9, -0.6],
+   [8.0, 0.8],
+   [8.5, -1.0]
+  ],
+  "resetTime": 0.5,
+  "recovery": 25.0
+ }
+}

@@ -1,0 +1,43 @@
+{
+ "id": "glock18",
+ "order": 4,
+ "displayName": "Glock-18",
+ "slot": "secondary",
+ "automatic": false,
+ "damage": 30,
+ "armorRatio": 1.0,
+ "headshotMultiplier": 4.0,
+ "range": 4096,
+ "rangeModifier": 0.85,
+ "cycleTime": 0.15,
+ "maxSpeed": 240,
+ "magazine": 20,
+ "reserve": 120,
+ "reloadTime": 2.27,
+ "drawTime": 0.8,
+ "inaccuracy": {
+  "stand": 0.4,
+  "crouch": 0.3,
+  "move": 3.5,
+  "air": 6.0,
+  "perShot": 0.9,
+  "maxExtra": 3.0,
+  "recovery": 5.0
+ },
+ "recoil": {
+  "pattern": [
+   [1.08, -0.25],
+   [2.12, 0.5],
+   [3.12, -0.75],
+   [4.08, 0.75],
+   [5.0, -0.75],
+   [5.88, 0.75],
+   [6.72, -0.75],
+   [7.52, 0.75],
+   [8.28, -0.75],
+   [9.0, 0.75]
+  ],
+  "resetTime": 0.3,
+  "recovery": 30.0
+ }
+}

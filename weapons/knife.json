@@ -1,0 +1,33 @@
+{
+ "id": "knife",
+ "order": 7,
+ "displayName": "Knife",
+ "slot": "melee",
+ "automatic": true,
+ "melee": true,
+ "damage": 40,
+ "armorRatio": 1.7,
+ "headshotMultiplier": 1.0,
+ "range": 64,
+ "rangeModifier": 1.0,
+ "cycleTime": 0.4,
+ "maxSpeed": 250,
+ "magazine": 0,
+ "reserve": 0,
+ "reloadTime": 0.0,
+ "drawTime": 0.6,
+ "inaccuracy": {
+  "stand": 0,
+  "crouch": 0,
+  "move": 0,
+  "air": 0,
+  "perShot": 0,
+  "maxExtra": 0,
+  "recovery": 1
+ },
+ "recoil": {
+  "pattern": [],
+  "resetTime": 0.0,
+  "recovery": 1.0
+ }
+}

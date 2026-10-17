@@ -1,0 +1,34 @@
+{
+ "id": "awp",
+ "order": 3,
+ "displayName": "AWP",
+ "slot": "primary",
+ "automatic": false,
+ "damage": 115,
+ "armorRatio": 1.95,
+ "headshotMultiplier": 4.0,
+ "range": 8192,
+ "rangeModifier": 0.99,
+ "cycleTime": 1.455,
+ "maxSpeed": 200,
+ "magazine": 10,
+ "reserve": 30,
+ "reloadTime": 3.7,
+ "drawTime": 1.45,
+ "inaccuracy": {
+  "stand": 0.05,
+  "crouch": 0.0,
+  "move": 25.0,
+  "air": 30.0,
+  "perShot": 0.0,
+  "maxExtra": 0.0,
+  "recovery": 1.0
+ },
+ "recoil": {
+  "pattern": [
+   [2.0, 0.0]
+  ],
+  "resetTime": 1.0,
+  "recovery": 20.0
+ }
+}

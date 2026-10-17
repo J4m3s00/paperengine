@@ -1,0 +1,41 @@
+{
+ "id": "usp_s",
+ "order": 5,
+ "displayName": "USP-S",
+ "slot": "secondary",
+ "automatic": false,
+ "damage": 35,
+ "armorRatio": 1.0,
+ "headshotMultiplier": 4.0,
+ "range": 4096,
+ "rangeModifier": 0.79,
+ "cycleTime": 0.15,
+ "maxSpeed": 240,
+ "magazine": 12,
+ "reserve": 24,
+ "reloadTime": 2.2,
+ "drawTime": 0.8,
+ "inaccuracy": {
+  "stand": 0.25,
+  "crouch": 0.15,
+  "move": 3.0,
+  "air": 5.5,
+  "perShot": 0.8,
+  "maxExtra": 2.5,
+  "recovery": 5.0
+ },
+ "recoil": {
+  "pattern": [
+   [1.3, -0.15],
+   [2.6, 0.3],
+   [3.9, -0.3],
+   [5.2, 0.3],
+   [6.5, -0.3],
+   [7.8, 0.3],
+   [9.1, -0.3],
+   [10.4, 0.3]
+  ],
+  "resetTime": 0.3,
+  "recovery": 30.0
+ }
+}
