@@ -2,6 +2,7 @@
 
 #include "base/error.h"
 #include "game/movement.h"
+#include "game/weapon.h"
 #include "net/bitstream.h"
 
 #include <cstdint>
@@ -20,7 +21,7 @@ inline constexpr std::uint16_t kProtocolVersion = 1;
 // Most usercmds in one packet (the newest plus recent ones as loss cover).
 inline constexpr int kMaxCmdsPerPacket = 8;
 
-enum class MessageType : std::uint8_t { Hello = 1, Accept, Reject, UserCmds, Snapshot };
+enum class MessageType : std::uint8_t { Hello = 1, Accept, Reject, UserCmds, Snapshot, Event };
 
 // Reads the type byte of a packet without consuming it.
 [[nodiscard]] std::expected<MessageType, Error> peekMessageType(std::span<const std::uint8_t> packet);
@@ -65,6 +66,26 @@ struct NetPlayer {
   PlayerState state;
   float yaw = 0.0F;
   float pitch = 0.0F;
+  Vitals vitals;
+  std::uint8_t weapon = 0;
+};
+
+// Something that happened, sent reliably to the clients that care (effects,
+// hit markers, kill feed).
+struct GameEvent {
+  enum class Type : std::uint8_t { Shot, Hit, Kill };
+  Type type = Type::Shot;
+  // Shooter / attacker / killer.
+  std::uint8_t actor = 0;
+  // Victim (Hit, Kill); unused for Shot.
+  std::uint8_t target = 0;
+  std::uint8_t weapon = 0;
+  // Health damage of a Hit.
+  std::uint8_t damage = 0;
+  bool headshot = false;
+  // Shot: muzzle and end point of the bullet. Hit: unused and impact point.
+  glm::vec3 from{0.0F};
+  glm::vec3 to{0.0F};
 };
 
 struct Snapshot {
@@ -75,12 +96,22 @@ struct Snapshot {
   std::uint8_t cmdQueue = 0;
   // Ascending by slot. Only what this recipient may see.
   std::vector<NetPlayer> players;
+  // The recipient's own weapon state, as of usercmd `ackedCmd`, for
+  // reconciliation.
+  bool hasSelf = false;
+  CombatState self;
 };
+
+// True if two weapon states behave the same from usercmd time `nowSeq` on,
+// ignoring what the wire cannot carry (times far in the past, float noise).
+[[nodiscard]] bool combatEquivalent(const CombatState &a, const CombatState &b,
+                                    std::uint32_t nowSeq);
 
 [[nodiscard]] std::vector<std::uint8_t> encode(const HelloMsg &msg);
 [[nodiscard]] std::vector<std::uint8_t> encode(const AcceptMsg &msg);
 [[nodiscard]] std::vector<std::uint8_t> encode(const RejectMsg &msg);
 [[nodiscard]] std::vector<std::uint8_t> encode(const UserCmdsMsg &msg);
+[[nodiscard]] std::vector<std::uint8_t> encode(const GameEvent &event);
 // `baseline` is the last snapshot the recipient acknowledged, or null for a
 // full snapshot. The wire records the baseline tick.
 [[nodiscard]] std::vector<std::uint8_t> encode(const Snapshot &snapshot, const Snapshot *baseline);
@@ -89,6 +120,7 @@ struct Snapshot {
 [[nodiscard]] std::expected<AcceptMsg, Error> decodeAccept(std::span<const std::uint8_t> packet);
 [[nodiscard]] std::expected<RejectMsg, Error> decodeReject(std::span<const std::uint8_t> packet);
 [[nodiscard]] std::expected<UserCmdsMsg, Error> decodeUserCmds(std::span<const std::uint8_t> packet);
+[[nodiscard]] std::expected<GameEvent, Error> decodeEvent(std::span<const std::uint8_t> packet);
 
 // Baseline tick a snapshot packet is relative to (0 = full), so the receiver
 // can pick the right baseline before decoding.

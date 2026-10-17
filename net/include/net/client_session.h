@@ -2,6 +2,7 @@
 
 #include "game/collision.h"
 #include "game/movement.h"
+#include "game/weapon.h"
 #include "net/protocol.h"
 #include "net/transport.h"
 
@@ -45,7 +46,8 @@ public:
   enum class Status { Connecting, Joining, Playing, Rejected, Disconnected };
 
   ClientSession(Transport &transport, PeerId server, const CollisionWorld &world,
-                MovementParams params, std::string name, ClientConfig config = {});
+                const WeaponDb &weapons, MovementParams params, std::string name,
+                ClientConfig config = {});
 
   // One client tick: receive packets, reconcile, predict this input, send.
   void tick(const UserCmd &input);
@@ -67,15 +69,26 @@ public:
   [[nodiscard]] double timeScale() const { return m_timeScale; }
   [[nodiscard]] const ClientStats &stats() const { return m_stats; }
 
+  // Own weapon state (predicted) and health (from the server).
+  [[nodiscard]] const CombatState &combat() const { return m_combat; }
+  [[nodiscard]] const Vitals &vitals() const { return m_vitals; }
+  [[nodiscard]] const WeaponDb &weapons() const { return m_weapons; }
+  // Shots the local player fired since the last call (predicted, for effects).
+  [[nodiscard]] std::vector<ShotInfo> takeLocalShots();
+  // Server events (other players' shots, hits on/by us, kills) since the last call.
+  [[nodiscard]] std::vector<GameEvent> takeEvents();
+
 private:
   struct Pending {
     std::uint32_t seq;
     UserCmd cmd;
     std::int64_t sentTick;
     PlayerState after; // predicted state after executing it
+    CombatState combatAfter;
   };
 
   void receive();
+  void onEvent(std::span<const std::uint8_t> packet);
   void onAccept(std::span<const std::uint8_t> packet);
   void onSnapshot(std::span<const std::uint8_t> packet, std::size_t size);
   void reconcile(const Snapshot &snapshot, const NetPlayer &self);
@@ -85,6 +98,7 @@ private:
   Transport &m_transport;
   PeerId m_server;
   const CollisionWorld &m_world;
+  const WeaponDb &m_weapons;
   MovementParams m_params;
   std::string m_name;
   ClientConfig m_config;
@@ -95,6 +109,10 @@ private:
   std::int64_t m_localTick = 0;
 
   PlayerState m_predicted;
+  CombatState m_combat;
+  Vitals m_vitals;
+  std::vector<ShotInfo> m_localShots;
+  std::vector<GameEvent> m_events;
   glm::vec3 m_errorOffset{0.0F};
   std::deque<Pending> m_pending;
   std::uint32_t m_nextSeq = 1;

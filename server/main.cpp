@@ -1,6 +1,7 @@
 #include "base/cvar.h"
 #include "base/fixed_timestep.h"
 #include "game/map.h"
+#include "game/weapon_def.h"
 #include "net/enet_transport.h"
 #include "net/server.h"
 
@@ -18,7 +19,7 @@ std::atomic<bool> g_running{true};
 void onSignal(int) { g_running = false; }
 
 void usage() {
-  spdlog::info("usage: server [--map file.json] [--port N] [--snapshot-rate N] [--set cvar value]");
+  spdlog::info("usage: server [--map file.json] [--port N] [--snapshot-rate N] [--weapons dir] [--moving-bots] [--set cvar value]");
 }
 } // namespace
 
@@ -26,6 +27,8 @@ int main(int argc, char **argv) {
   std::string mapPath = std::string(PAPER_MAPS_DIR) + "/dev_world.json";
   std::uint16_t port = Paper::kDefaultServerPort;
   Paper::ServerConfig config;
+  std::string weaponsDir = PAPER_WEAPONS_DIR;
+  bool movingBots = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -36,6 +39,10 @@ int main(int argc, char **argv) {
       port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
     } else if (arg == "--snapshot-rate" && hasValue) {
       config.snapshotRate = static_cast<std::uint16_t>(std::atoi(argv[++i]));
+    } else if (arg == "--weapons" && hasValue) {
+      weaponsDir = argv[++i];
+    } else if (arg == "--moving-bots") {
+      movingBots = true;
     } else if (arg == "--set" && i + 2 < argc) {
       const std::string name = argv[i + 1];
       const std::string value = argv[i + 2];
@@ -64,6 +71,11 @@ int main(int argc, char **argv) {
     spdlog::error("{}", world.error().message);
     return 1;
   }
+  auto weapons = Paper::WeaponDb::loadDirectory(weaponsDir);
+  if (!weapons) {
+    spdlog::error("{}", weapons.error().message);
+    return 1;
+  }
   Paper::MovementCvars movementCvars;
   config.movement = movementCvars.params();
   config.spawns = Paper::spawnPoints(*map);
@@ -74,7 +86,10 @@ int main(int argc, char **argv) {
     spdlog::error("{}", transport.error().message);
     return 1;
   }
-  Paper::Server server(**transport, *world, config);
+  Paper::Server server(**transport, *world, *weapons, config);
+  for (const Paper::MapEntity &bot : map->entitiesOfType("bot")) {
+    server.addBot({bot.origin, bot.yaw}, movingBots);
+  }
   spdlog::info("paper server: map '{}', {} Hz tick, {} Hz snapshots, port {}", config.map,
                config.tickRate, config.snapshotRate, (*transport)->port());
 

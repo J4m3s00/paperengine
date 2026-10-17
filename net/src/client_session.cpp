@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <utility>
 
 namespace Paper {
 namespace {
@@ -32,19 +33,40 @@ bool matches(const PlayerState &a, const PlayerState &b) {
 } // namespace
 
 ClientSession::ClientSession(Transport &transport, PeerId server, const CollisionWorld &world,
-                             MovementParams params, std::string name, ClientConfig config)
-    : m_transport(transport), m_server(server), m_world(world), m_params(params),
-      m_name(std::move(name)), m_config(config) {}
+                             const WeaponDb &weapons, MovementParams params, std::string name,
+                             ClientConfig config)
+    : m_transport(transport), m_server(server), m_world(world), m_weapons(weapons),
+      m_params(params), m_name(std::move(name)), m_config(config),
+      m_combat(makeLoadout(weapons)) {}
+
+std::vector<ShotInfo> ClientSession::takeLocalShots() { return std::exchange(m_localShots, {}); }
+std::vector<GameEvent> ClientSession::takeEvents() { return std::exchange(m_events, {}); }
 
 void ClientSession::tick(const UserCmd &input) {
   PAPER_ZONE("ClientSession::tick");
   ++m_localTick;
   receive();
   if (m_status == Status::Playing) {
-    const UserCmd cmd = quantizeUserCmd(input);
-    movePlayer(m_predicted, cmd, m_world, m_params, kDefaultMaxSpeed,
-               static_cast<float>(dt()));
-    m_pending.push_back({m_nextSeq++, cmd, m_localTick, m_predicted});
+    UserCmd stamped = input;
+    // The server tick our screen shows other players at (lag compensation).
+    stamped.viewTick = m_haveClock
+                           ? static_cast<float>(std::max(
+                                 0.0, (static_cast<double>(m_localTick) * dt() + m_clockOffset -
+                                       m_config.interpolationDelayMs * 0.001) /
+                                          dt()))
+                           : 0.0F;
+    const UserCmd cmd = quantizeUserCmd(stamped);
+    const std::uint32_t seq = m_nextSeq++;
+    if (m_vitals.alive) {
+      movePlayer(m_predicted, cmd, m_world, m_params, weaponMaxSpeed(m_combat, m_weapons),
+                 static_cast<float>(dt()));
+      const WeaponEvents ev =
+          stepWeapon(m_combat, cmd, m_predicted, eyePosition(m_predicted), seq, m_weapons);
+      if (ev.fired) {
+        m_localShots.push_back(ev.shot);
+      }
+    }
+    m_pending.push_back({seq, cmd, m_localTick, m_predicted, m_combat});
     while (m_pending.size() > kMaxPending) {
       m_pending.pop_front();
     }
@@ -84,12 +106,20 @@ void ClientSession::receive() {
           m_rejectReason = reject->reason;
           m_status = Status::Rejected;
         }
+      } else if (*type == MessageType::Event) {
+        onEvent(event.data);
       } else if (*type == MessageType::Snapshot) {
         onSnapshot(event.data, event.data.size());
       }
       break;
     }
     }
+  }
+}
+
+void ClientSession::onEvent(std::span<const std::uint8_t> packet) {
+  if (const auto event = decodeEvent(packet)) {
+    m_events.push_back(*event);
   }
 }
 
@@ -139,8 +169,12 @@ void ClientSession::onSnapshot(std::span<const std::uint8_t> packet, std::size_t
   const auto self = std::find_if(snapshot.players.begin(), snapshot.players.end(),
                                  [&](const NetPlayer &p) { return p.slot == m_slot; });
   if (self != snapshot.players.end()) {
+    m_vitals = self->vitals;
     if (m_status == Status::Joining) {
       m_predicted = self->state;
+      if (snapshot.hasSelf) {
+        m_combat = snapshot.self;
+      }
       m_status = Status::Playing;
     } else {
       reconcile(snapshot, *self);
@@ -165,7 +199,8 @@ void ClientSession::reconcile(const Snapshot &snapshot, const NetPlayer &self) {
     const double rtt = static_cast<double>(m_localTick - it->sentTick) * dt() * 1000.0;
     m_stats.inputRttMs = m_stats.inputRttMs == 0.0 ? rtt : m_stats.inputRttMs * 0.9 + rtt * 0.1;
   }
-  const bool agrees = found && matches(it->after, self.state);
+  const bool agrees = found && matches(it->after, self.state) &&
+                      (!snapshot.hasSelf || combatEquivalent(it->combatAfter, snapshot.self, acked));
   while (!m_pending.empty() && m_pending.front().seq <= acked) {
     m_pending.pop_front();
   }
@@ -176,11 +211,18 @@ void ClientSession::reconcile(const Snapshot &snapshot, const NetPlayer &self) {
   ++m_stats.corrections;
   const glm::vec3 before = m_predicted.origin;
   PlayerState state = self.state;
+  CombatState combat = snapshot.hasSelf ? snapshot.self : m_combat;
   for (Pending &p : m_pending) {
-    movePlayer(state, p.cmd, m_world, m_params, kDefaultMaxSpeed, static_cast<float>(dt()));
+    if (self.vitals.alive) {
+      movePlayer(state, p.cmd, m_world, m_params, weaponMaxSpeed(combat, m_weapons),
+                 static_cast<float>(dt()));
+      stepWeapon(combat, p.cmd, state, eyePosition(state), p.seq, m_weapons);
+    }
     p.after = state;
+    p.combatAfter = combat;
   }
   m_predicted = state;
+  m_combat = combat;
   const glm::vec3 jump = before - m_predicted.origin;
   m_stats.lastCorrection = glm::length(jump);
   m_errorOffset = glm::length(jump) > m_config.snapDistance ? glm::vec3(0.0F) : m_errorOffset + jump;

@@ -6,6 +6,7 @@
 //   bots --connect host[:port] [--bots N] [--seconds S]
 //       Real-time bots over UDP against a running server.
 #include "game/map.h"
+#include "game/weapon_def.h"
 #include "net/bot.h"
 #include "net/client_session.h"
 #include "net/enet_transport.h"
@@ -62,19 +63,20 @@ void report(const std::vector<std::unique_ptr<ClientSession>> &clients, double s
                static_cast<double>(bytesOut) / n / seconds / 1024.0);
 }
 
-int runInProcess(const Options &opt, const CollisionWorld &world, const MapData &map) {
+int runInProcess(const Options &opt, const CollisionWorld &world, const MapData &map,
+                 const WeaponDb &weapons) {
   LoopbackNetwork net(opt.seed);
   net.setConditions(opt.conditions);
   auto &serverEp = net.addEndpoint();
   ServerConfig config;
   config.spawns = spawnPoints(map);
-  Server server(serverEp, world, config);
+  Server server(serverEp, world, weapons, config);
 
   std::vector<std::unique_ptr<ClientSession>> clients;
   std::vector<BotBrain> brains;
   for (int i = 0; i < opt.bots; ++i) {
     auto &ep = net.addEndpoint();
-    clients.push_back(std::make_unique<ClientSession>(ep, serverEp.id(), world, config.movement,
+    clients.push_back(std::make_unique<ClientSession>(ep, serverEp.id(), world, weapons, config.movement,
                                                       "bot" + std::to_string(i)));
     brains.emplace_back(opt.seed * 1000 + static_cast<std::uint64_t>(i));
     ep.connect(serverEp.id());
@@ -118,7 +120,7 @@ int runInProcess(const Options &opt, const CollisionWorld &world, const MapData 
   return 0;
 }
 
-int runRealtime(const Options &opt, const CollisionWorld &world) {
+int runRealtime(const Options &opt, const CollisionWorld &world, const WeaponDb &weapons) {
   struct Bot {
     std::unique_ptr<EnetTransport> transport;
     std::unique_ptr<ClientSession> session;
@@ -137,7 +139,7 @@ int runRealtime(const Options &opt, const CollisionWorld &world) {
       spdlog::error("{}", peer.error().message);
       return 1;
     }
-    auto session = std::make_unique<ClientSession>(**transport, *peer, world, cvarsHolder.params(),
+    auto session = std::make_unique<ClientSession>(**transport, *peer, world, weapons, cvarsHolder.params(),
                                                    "bot" + std::to_string(i));
     bots.push_back({std::move(*transport), std::move(session),
                     BotBrain(opt.seed * 1000 + static_cast<std::uint64_t>(i))});
@@ -201,5 +203,10 @@ int main(int argc, char **argv) {
     spdlog::error("{}", world.error().message);
     return 1;
   }
-  return opt.inprocess ? runInProcess(opt, *world, *map) : runRealtime(opt, *world);
+  auto weapons = WeaponDb::loadDirectory(PAPER_WEAPONS_DIR);
+  if (!weapons) {
+    spdlog::error("{}", weapons.error().message);
+    return 1;
+  }
+  return opt.inprocess ? runInProcess(opt, *world, *map, *weapons) : runRealtime(opt, *world, *weapons);
 }

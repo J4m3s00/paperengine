@@ -11,6 +11,15 @@ using namespace Paper;
 namespace {
 constexpr std::int64_t kTickNs = 1'000'000'000LL / 128;
 
+const WeaponDb &weaponDb() {
+  static const WeaponDb db = [] {
+    auto d = WeaponDb::loadDirectory(PAPER_WEAPONS_DIR);
+    REQUIRE(d.has_value());
+    return std::move(*d);
+  }();
+  return db;
+}
+
 CollisionWorld makeWorld() {
   std::vector<BrushDesc> brushes{boxBrush({-3000, -100, -3000}, {3000, 0, 3000}),
                                  boxBrush({-3000, 0, -3000}, {3000, 200, -2990})};
@@ -31,7 +40,7 @@ struct Rig {
 
   explicit Rig(std::uint64_t seed = 1, NetworkConditions cond = {})
       : net(seed), serverEp((net.setConditions(cond), net.addEndpoint())),
-        server(serverEp, world, makeConfig()) {}
+        server(serverEp, world, weaponDb(), makeConfig()) {}
 
   static ServerConfig makeConfig() {
     ServerConfig c;
@@ -42,8 +51,8 @@ struct Rig {
   ClientSession &addClient() {
     auto &ep = net.addEndpoint();
     clientEps.push_back(&ep);
-    clients.push_back(std::make_unique<ClientSession>(ep, serverEp.id(), world, MovementParams{},
-                                                      "bot"));
+    clients.push_back(std::make_unique<ClientSession>(ep, serverEp.id(), world, weaponDb(),
+                                                      MovementParams{}, "bot"));
     ep.connect(serverEp.id());
     return *clients.back();
   }
@@ -191,4 +200,137 @@ TEST_CASE("a client leaving frees its slot") {
   rig.run(5, [](auto, auto) { return UserCmd{}; });
   CHECK(rig.server.playerCount() == 0);
   CHECK(client.status() == ClientSession::Status::Disconnected);
+}
+
+namespace {
+// Looks along -Z (yaw 0) with the given pitch while holding the trigger.
+UserCmd aimAndFire(float pitch) {
+  UserCmd c;
+  c.pitch = pitch;
+  c.attack = true;
+  return c;
+}
+} // namespace
+
+TEST_CASE("a headshot from the AK kills a stationary bot, which respawns later") {
+  Rig rig;
+  auto &client = rig.addClient();
+  const int bot = rig.server.addBot({glm::vec3(0, 2, -300), 0.0F});
+  REQUIRE(bot >= 0);
+  rig.run(40, [](auto, auto) { return UserCmd{}; }); // settle, join
+  REQUIRE(rig.server.vitals(static_cast<std::uint8_t>(bot))->alive);
+
+  rig.run(6, [](auto, auto) { return aimAndFire(0.0F); }); // eye height hits the head
+  rig.run(20, [](auto, auto) { return UserCmd{}; });
+  const Vitals *v = rig.server.vitals(static_cast<std::uint8_t>(bot));
+  CHECK_FALSE(v->alive);
+  CHECK(rig.server.stats().kills == 1);
+
+  bool sawHit = false;
+  bool sawKill = false;
+  for (const GameEvent &e : client.takeEvents()) {
+    if (e.type == GameEvent::Type::Hit) {
+      sawHit = true;
+      CHECK(e.headshot);
+      CHECK(e.target == bot);
+    }
+    sawKill = sawKill || (e.type == GameEvent::Type::Kill && e.target == bot);
+  }
+  CHECK(sawHit);
+  CHECK(sawKill);
+
+  rig.run(128 * 4, [](auto, auto) { return UserCmd{}; });
+  CHECK(rig.server.vitals(static_cast<std::uint8_t>(bot))->alive);
+  CHECK(rig.server.vitals(static_cast<std::uint8_t>(bot))->health == 100);
+}
+
+TEST_CASE("body shots take several bullets, armor absorbs part of them") {
+  Rig rig;
+  rig.addClient();
+  const int bot = rig.server.addBot({glm::vec3(0, 2, -300), 0.0F});
+  rig.run(40, [](auto, auto) { return UserCmd{}; });
+  // Aim at the chest: 12 units below the eye at 300 units.
+  const float pitch = -std::atan(12.0F / 300.0F);
+  rig.run(2, [&](auto, auto) { return aimAndFire(pitch); });
+  rig.run(3, [](auto, auto) { return UserCmd{}; });
+  const Vitals *v = rig.server.vitals(static_cast<std::uint8_t>(bot));
+  CHECK(v->alive);
+  CHECK(v->health < 100);
+  CHECK(v->health > 60);
+  CHECK(v->armor < 100);
+}
+
+TEST_CASE("walls block bullets") {
+  Rig rig;
+  rig.addClient();
+  // Rebuild the world with a wall between shooter and bot.
+  std::vector<BrushDesc> brushes{boxBrush({-3000, -100, -3000}, {3000, 0, 3000}),
+                                 boxBrush({-50, 0, -150}, {50, 200, -140})};
+  auto walled = CollisionWorld::create(brushes);
+  REQUIRE(walled.has_value());
+  LoopbackNetwork net;
+  auto &serverEp = net.addEndpoint();
+  auto &clientEp = net.addEndpoint();
+  Server server(serverEp, *walled, weaponDb(), Rig::makeConfig());
+  ClientSession client(clientEp, serverEp.id(), *walled, weaponDb(), MovementParams{}, "c");
+  clientEp.connect(serverEp.id());
+  const int bot = server.addBot({glm::vec3(0, 2, -300), 0.0F});
+  for (int t = 0; t < 60; ++t) {
+    client.tick(t < 40 ? UserCmd{} : aimAndFire(0.0F));
+    server.tick();
+    net.advance(kTickNs);
+  }
+  CHECK(server.vitals(static_cast<std::uint8_t>(bot))->health == 100);
+  CHECK(server.stats().shotsFired > 0);
+  CHECK(server.stats().hits == 0);
+}
+
+TEST_CASE("other players see shots as events, the shooter predicts its own") {
+  Rig rig;
+  auto &shooter = rig.addClient();
+  auto &watcher = rig.addClient();
+  rig.run(40, [](auto, auto) { return UserCmd{}; });
+  rig.run(1, [](std::size_t who, auto) { return who == 0 ? aimAndFire(0.5F) : UserCmd{}; });
+  rig.run(10, [](auto, auto) { return UserCmd{}; });
+  CHECK(shooter.takeLocalShots().size() == 1);
+  int shotEvents = 0;
+  for (const GameEvent &e : watcher.takeEvents()) {
+    shotEvents += e.type == GameEvent::Type::Shot ? 1 : 0;
+  }
+  CHECK(shotEvents == 1);
+  for (const GameEvent &e : shooter.takeEvents()) {
+    CHECK(e.type != GameEvent::Type::Shot); // not echoed back to the shooter
+  }
+}
+
+TEST_CASE("predicted ammo and recoil match the server while spraying under bad network") {
+  Rig rig(5, {.latencyMs = 50, .jitterMs = 6, .loss = 0.02});
+  auto &client = rig.addClient();
+  rig.run(128 * 20, [](auto, auto t) {
+    UserCmd c;
+    c.attack = (t / 64) % 2 == 0;
+    c.reload = t % 640 == 639;
+    c.forward = (t / 100) % 2 == 0 ? 1.0F : 0.0F;
+    return c;
+  });
+  CHECK(client.stats().corrections * 15 < client.stats().snapshotsReceived);
+  const CombatState *server = rig.server.combat(0);
+  REQUIRE(server != nullptr);
+  CHECK(client.combat().weapon == server->weapon);
+  CHECK(rig.server.stats().shotsFired > 50);
+}
+
+TEST_CASE("weapon switching and reloading are predicted") {
+  Rig rig;
+  auto &client = rig.addClient();
+  rig.run(30, [](auto, auto) { return UserCmd{}; });
+  rig.run(1, [](auto, auto) {
+    UserCmd c;
+    c.weaponSelect = 4; // Glock
+    return c;
+  });
+  CHECK(client.combat().weapon == 3); // immediately, before the server answers
+  rig.run(40, [](auto, auto) { return UserCmd{}; });
+  CHECK(rig.server.combat(0)->weapon == 3);
+  CHECK(client.stats().corrections == 0);
 }

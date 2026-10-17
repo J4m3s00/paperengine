@@ -1,5 +1,6 @@
 #include "net/protocol.h"
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 
@@ -47,6 +48,11 @@ void writeCmd(BitWriter &w, const UserCmd &c) {
   w.writeBool(c.jump);
   w.writeBool(c.duck);
   w.writeBool(c.walk);
+  w.writeBool(c.attack);
+  w.writeBool(c.reload);
+  w.write(c.weaponSelect, 4);
+  // 1/16 tick resolution.
+  w.write(static_cast<std::uint32_t>(std::max(0.0F, c.viewTick) * 16.0F + 0.5F), 32);
 }
 UserCmd readCmd(BitReader &r) {
   UserCmd c;
@@ -57,6 +63,10 @@ UserCmd readCmd(BitReader &r) {
   c.jump = r.readBool();
   c.duck = r.readBool();
   c.walk = r.readBool();
+  c.attack = r.readBool();
+  c.reload = r.readBool();
+  c.weaponSelect = static_cast<std::uint8_t>(r.read(4));
+  c.viewTick = static_cast<float>(r.read(32)) / 16.0F;
   return c;
 }
 
@@ -64,6 +74,19 @@ BitReader open(std::span<const std::uint8_t> packet, MessageType expected, bool 
   BitReader r(packet);
   typeOk = r.read(8) == static_cast<std::uint32_t>(expected);
   return r;
+}
+
+void writeVitals(BitWriter &w, const NetPlayer &p) {
+  w.write(p.vitals.health, 7);
+  w.write(p.vitals.armor, 7);
+  w.writeBool(p.vitals.alive);
+  w.write(p.weapon, 3);
+}
+void readVitals(BitReader &r, NetPlayer &p) {
+  p.vitals.health = static_cast<std::uint8_t>(r.read(7));
+  p.vitals.armor = static_cast<std::uint8_t>(r.read(7));
+  p.vitals.alive = r.readBool();
+  p.weapon = static_cast<std::uint8_t>(r.read(3));
 }
 
 void writePlayerFull(BitWriter &w, const NetPlayer &p) {
@@ -78,6 +101,7 @@ void writePlayerFull(BitWriter &w, const NetPlayer &p) {
   w.writeBool(p.state.jumpHeld);
   writeAngle(w, p.yaw);
   writeAngle(w, p.pitch);
+  writeVitals(w, p);
 }
 void readPlayerFull(BitReader &r, NetPlayer &p) {
   p.state.origin = {r.readFloat(), r.readFloat(), r.readFloat()};
@@ -87,6 +111,7 @@ void readPlayerFull(BitReader &r, NetPlayer &p) {
   p.state.jumpHeld = r.readBool();
   p.yaw = readAngle(r);
   p.pitch = readAngle(r);
+  readVitals(r, p);
 }
 
 std::uint32_t bits(float f) { return std::bit_cast<std::uint32_t>(f); }
@@ -127,6 +152,11 @@ void writePlayerDelta(BitWriter &w, const NetPlayer &p, const NetPlayer &b) {
   if (pitchChanged) {
     writeAngle(w, p.pitch);
   }
+  const bool vitalsChanged = !(p.vitals == b.vitals) || p.weapon != b.weapon;
+  w.writeBool(vitalsChanged);
+  if (vitalsChanged) {
+    writeVitals(w, p);
+  }
 }
 void readPlayerDelta(BitReader &r, NetPlayer &p) {
   float *fields[6] = {&p.state.origin.x, &p.state.origin.y, &p.state.origin.z,
@@ -148,6 +178,58 @@ void readPlayerDelta(BitReader &r, NetPlayer &p) {
   if (r.readBool()) {
     p.pitch = readAngle(r);
   }
+  if (r.readBool()) {
+    readVitals(r, p);
+  }
+}
+
+// Times are sent relative to the usercmd the state belongs to.
+constexpr int kTimeBits = 20;
+constexpr std::int64_t kTimeMax = (1LL << kTimeBits) - 1;
+
+std::uint32_t remaining(std::int64_t at, std::int64_t now) {
+  return static_cast<std::uint32_t>(std::clamp<std::int64_t>(at - now, 0, kTimeMax));
+}
+
+void writeCombat(BitWriter &w, const CombatState &s, std::int64_t now) {
+  w.write(s.weapon, 3);
+  for (const WeaponAmmo &a : s.ammo) {
+    w.write(static_cast<std::uint32_t>(std::clamp(a.clip, 0, 255)), 8);
+    w.write(static_cast<std::uint32_t>(std::clamp(a.reserve, 0, 1023)), 10);
+  }
+  // nextAttack may lie up to one tick in the past and still matter.
+  w.write(static_cast<std::uint32_t>(
+              std::clamp<std::int64_t>(s.nextAttack - now + kSubTicksPerTick, 0, kTimeMax)),
+          kTimeBits);
+  w.write(remaining(s.reloadEnd, now), kTimeBits);
+  w.write(remaining(s.drawEnd, now), kTimeBits);
+  w.write(static_cast<std::uint32_t>(std::clamp<std::int64_t>(now - s.lastShot, 0, kTimeMax)),
+          kTimeBits);
+  w.write(std::min<std::uint32_t>(s.shotIndex, 255), 8);
+  w.writeBool(s.attackHeld);
+  w.writeFloat(s.extraSpread);
+  w.writeFloat(s.punch.x);
+  w.writeFloat(s.punch.y);
+}
+CombatState readCombat(BitReader &r, std::int64_t now) {
+  CombatState s;
+  s.weapon = static_cast<std::uint8_t>(r.read(3));
+  for (WeaponAmmo &a : s.ammo) {
+    a.clip = static_cast<std::int32_t>(r.read(8));
+    a.reserve = static_cast<std::int32_t>(r.read(10));
+  }
+  s.nextAttack = now - kSubTicksPerTick + static_cast<std::int64_t>(r.read(kTimeBits));
+  const auto reload = static_cast<std::int64_t>(r.read(kTimeBits));
+  s.reloadEnd = reload == 0 ? 0 : now + reload;
+  const auto draw = static_cast<std::int64_t>(r.read(kTimeBits));
+  s.drawEnd = draw == 0 ? 0 : now + draw;
+  s.lastShot = now - static_cast<std::int64_t>(r.read(kTimeBits));
+  s.shotIndex = static_cast<std::uint16_t>(r.read(8));
+  s.attackHeld = r.readBool();
+  s.extraSpread = r.readFloat();
+  s.punch.x = r.readFloat();
+  s.punch.y = r.readFloat();
+  return s;
 }
 
 const NetPlayer *findPlayer(const Snapshot &s, std::uint8_t slot) {
@@ -161,7 +243,7 @@ const NetPlayer *findPlayer(const Snapshot &s, std::uint8_t slot) {
 } // namespace
 
 std::expected<MessageType, Error> peekMessageType(std::span<const std::uint8_t> packet) {
-  if (packet.empty() || packet[0] < 1 || packet[0] > static_cast<std::uint8_t>(MessageType::Snapshot)) {
+  if (packet.empty() || packet[0] < 1 || packet[0] > static_cast<std::uint8_t>(MessageType::Event)) {
     return std::unexpected(bad("unknown message type"));
   }
   return static_cast<MessageType>(packet[0]);
@@ -173,6 +255,18 @@ UserCmd quantizeUserCmd(const UserCmd &cmd) {
   const auto bytes = w.take();
   BitReader r(bytes);
   return readCmd(r);
+}
+
+bool combatEquivalent(const CombatState &a, const CombatState &b, std::uint32_t nowSeq) {
+  const std::int64_t now = static_cast<std::int64_t>(nowSeq) * kSubTicksPerTick;
+  const auto attackAt = [&](const CombatState &s) { return std::max(s.nextAttack, now - kSubTicksPerTick); };
+  const auto future = [&](std::int64_t t) { return t > now ? t : 0; };
+  const auto shotAt = [&](const CombatState &s) { return std::max(s.lastShot, now - kTimeMax); };
+  return a.weapon == b.weapon && a.ammo == b.ammo && attackAt(a) == attackAt(b) &&
+         future(a.reloadEnd) == future(b.reloadEnd) && future(a.drawEnd) == future(b.drawEnd) &&
+         shotAt(a) == shotAt(b) && std::min<int>(a.shotIndex, 255) == std::min<int>(b.shotIndex, 255) &&
+         a.attackHeld == b.attackHeld && std::fabs(a.extraSpread - b.extraSpread) < 1e-4F &&
+         glm::distance(a.punch, b.punch) < 1e-4F;
 }
 
 std::vector<std::uint8_t> encode(const HelloMsg &msg) {
@@ -215,6 +309,23 @@ std::vector<std::uint8_t> encode(const UserCmdsMsg &msg) {
   return w.take();
 }
 
+std::vector<std::uint8_t> encode(const GameEvent &e) {
+  BitWriter w;
+  w.write(static_cast<std::uint32_t>(MessageType::Event), 8);
+  w.write(static_cast<std::uint32_t>(e.type), 2);
+  w.write(e.actor, 5);
+  w.write(e.target, 5);
+  w.write(e.weapon, 3);
+  w.write(e.damage, 8);
+  w.writeBool(e.headshot);
+  for (const glm::vec3 *v : {&e.from, &e.to}) {
+    w.writeFloat(v->x);
+    w.writeFloat(v->y);
+    w.writeFloat(v->z);
+  }
+  return w.take();
+}
+
 std::vector<std::uint8_t> encode(const Snapshot &snapshot, const Snapshot *baseline) {
   BitWriter w;
   w.write(static_cast<std::uint32_t>(MessageType::Snapshot), 8);
@@ -223,6 +334,10 @@ std::vector<std::uint8_t> encode(const Snapshot &snapshot, const Snapshot *basel
   w.write(snapshot.ackedCmd, 32);
   w.write(snapshot.cmdQueue, 5);
   w.write(static_cast<std::uint32_t>(snapshot.players.size()), 5);
+  w.writeBool(snapshot.hasSelf);
+  if (snapshot.hasSelf) {
+    writeCombat(w, snapshot.self, static_cast<std::int64_t>(snapshot.ackedCmd) * kSubTicksPerTick);
+  }
   for (const NetPlayer &p : snapshot.players) {
     w.write(p.slot, 5);
     const NetPlayer *old = baseline ? findPlayer(*baseline, p.slot) : nullptr;
@@ -293,6 +408,25 @@ std::expected<UserCmdsMsg, Error> decodeUserCmds(std::span<const std::uint8_t> p
   return m;
 }
 
+std::expected<GameEvent, Error> decodeEvent(std::span<const std::uint8_t> packet) {
+  bool typeOk = false;
+  BitReader r = open(packet, MessageType::Event, typeOk);
+  GameEvent e;
+  const std::uint32_t type = r.read(2);
+  e.actor = static_cast<std::uint8_t>(r.read(5));
+  e.target = static_cast<std::uint8_t>(r.read(5));
+  e.weapon = static_cast<std::uint8_t>(r.read(3));
+  e.damage = static_cast<std::uint8_t>(r.read(8));
+  e.headshot = r.readBool();
+  e.from = {r.readFloat(), r.readFloat(), r.readFloat()};
+  e.to = {r.readFloat(), r.readFloat(), r.readFloat()};
+  if (!typeOk || !r.ok() || type > 2) {
+    return std::unexpected(bad("event"));
+  }
+  e.type = static_cast<GameEvent::Type>(type);
+  return e;
+}
+
 std::expected<std::uint32_t, Error> snapshotBaselineTick(std::span<const std::uint8_t> packet) {
   bool typeOk = false;
   BitReader r = open(packet, MessageType::Snapshot, typeOk);
@@ -314,6 +448,10 @@ std::expected<Snapshot, Error> decodeSnapshot(std::span<const std::uint8_t> pack
   s.ackedCmd = r.read(32);
   s.cmdQueue = static_cast<std::uint8_t>(r.read(5));
   const std::uint32_t count = r.read(5);
+  s.hasSelf = r.readBool();
+  if (s.hasSelf) {
+    s.self = readCombat(r, static_cast<std::int64_t>(s.ackedCmd) * kSubTicksPerTick);
+  }
   if (!typeOk || !r.ok()) {
     return std::unexpected(bad("snapshot header"));
   }

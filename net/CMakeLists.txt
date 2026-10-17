@@ -7,4 +7,5 @@ target_compile_options(net PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(net_tests tests/main.cpp tests/loopback_test.cpp tests/enet_test.cpp tests/protocol_test.cpp tests/session_test.cpp)
 target_link_libraries(net_tests PRIVATE net doctest::doctest)
+target_compile_definitions(net_tests PRIVATE PAPER_WEAPONS_DIR="${CMAKE_SOURCE_DIR}/weapons")
 add_test(NAME net_tests COMMAND net_tests)

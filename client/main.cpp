@@ -13,6 +13,7 @@
 #include "game/map.h"
 #include "game/movement.h"
 #include "game/replay.h"
+#include "game/weapon_def.h"
 #include "net/conditioned_transport.h"
 #include "net/enet_transport.h"
 
@@ -140,6 +141,7 @@ int main(int argc, char **argv) {
     materialHandles.push_back(material);
   }
 
+  const Paper::WeaponDb weapons = require(Paper::WeaponDb::loadDirectory(PAPER_WEAPONS_DIR));
   Paper::MovementCvars movementCvars;
   Paper::DebugOverlay overlay;
   overlay.setVisible(screenshotPath != nullptr);
@@ -182,7 +184,7 @@ int main(int argc, char **argv) {
       spdlog::info("simulating {:.0f} ms RTT, {:.0f} ms jitter, {:.1f}% loss",
                    simulated.latencyMs * 2, simulated.jitterMs, simulated.loss * 100.0);
     }
-    session = std::make_unique<Paper::ClientSession>(*transport, peer, collision,
+    session = std::make_unique<Paper::ClientSession>(*transport, peer, collision, weapons,
                                                      movementCvars.params(), playerName);
     player.setSession(session.get());
     spdlog::info("connecting to {}:{}", host, port);

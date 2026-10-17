@@ -175,12 +175,100 @@ TEST_CASE("truncated and random packets never crash the decoders") {
   for (int i = 0; i < 20000; ++i) {
     std::vector<std::uint8_t> junk(rng() % 80);
     for (auto &b : junk) b = static_cast<std::uint8_t>(rng());
-    if (!junk.empty()) junk[0] = static_cast<std::uint8_t>(1 + rng() % 5);
+    if (!junk.empty()) junk[0] = static_cast<std::uint8_t>(1 + rng() % 6);
     (void)decodeSnapshot(junk, &base);
     (void)decodeUserCmds(junk);
     (void)decodeHello(junk);
     (void)decodeAccept(junk);
     (void)decodeReject(junk);
+    (void)decodeEvent(junk);
     (void)peekMessageType(junk);
   }
+}
+
+TEST_CASE("combat input and view tick round trip in usercmds") {
+  UserCmdsMsg msg;
+  UserCmd c;
+  c.attack = true;
+  c.reload = true;
+  c.weaponSelect = 5;
+  c.viewTick = 1234.5625F;
+  msg.cmds.push_back({9, c});
+  const auto decoded = decodeUserCmds(encode(msg));
+  REQUIRE(decoded.has_value());
+  CHECK(decoded->cmds[0].cmd.attack);
+  CHECK(decoded->cmds[0].cmd.reload);
+  CHECK(decoded->cmds[0].cmd.weaponSelect == 5);
+  CHECK(decoded->cmds[0].cmd.viewTick == 1234.5625F);
+  CHECK(quantizeUserCmd(c).viewTick == 1234.5625F);
+}
+
+TEST_CASE("vitals and weapons travel in snapshots, in full and as deltas") {
+  Snapshot base = makeSnapshot(100, 3);
+  Snapshot next = makeSnapshot(101, 3);
+  next.players[1].vitals = {37, 12, true};
+  next.players[1].weapon = 5;
+  next.players[2].vitals.alive = false;
+  const auto full = decodeSnapshot(encode(next, nullptr), nullptr);
+  REQUIRE(full.has_value());
+  CHECK(full->players[1].vitals == Vitals{37, 12, true});
+  CHECK(full->players[1].weapon == 5);
+  const auto delta = decodeSnapshot(encode(next, &base), &base);
+  REQUIRE(delta.has_value());
+  CHECK(delta->players[1].vitals == Vitals{37, 12, true});
+  CHECK(delta->players[1].weapon == 5);
+  CHECK_FALSE(delta->players[2].vitals.alive);
+  CHECK(delta->players[0].vitals == Vitals{});
+}
+
+TEST_CASE("the recipient's weapon state survives the wire") {
+  Snapshot s = makeSnapshot(100, 1);
+  s.ackedCmd = 5000;
+  s.hasSelf = true;
+  const std::int64_t now = 5000 * kSubTicksPerTick;
+  s.self.weapon = 2;
+  s.self.ammo[0] = {17, 63};
+  s.self.ammo[6] = {0, 0};
+  s.self.nextAttack = now + 3000;
+  s.self.reloadEnd = now + 90000;
+  s.self.drawEnd = 0;
+  s.self.lastShot = now - 700;
+  s.self.shotIndex = 11;
+  s.self.attackHeld = true;
+  s.self.extraSpread = 1.25F;
+  s.self.punch = {7.5F, -2.0F};
+  const auto decoded = decodeSnapshot(encode(s, nullptr), nullptr);
+  REQUIRE(decoded.has_value());
+  REQUIRE(decoded->hasSelf);
+  CHECK(combatEquivalent(s.self, decoded->self, 5000));
+  CHECK(decoded->self.nextAttack == s.self.nextAttack);
+  CHECK(decoded->self.reloadEnd == s.self.reloadEnd);
+  CHECK(decoded->self.punch == s.self.punch);
+  // A weapon state that differs is noticed.
+  CombatState other = decoded->self;
+  other.ammo[0].clip = 16;
+  CHECK_FALSE(combatEquivalent(s.self, other, 5000));
+  other = decoded->self;
+  other.punch.x += 0.01F;
+  CHECK_FALSE(combatEquivalent(s.self, other, 5000));
+}
+
+TEST_CASE("game events round trip") {
+  GameEvent e;
+  e.type = GameEvent::Type::Kill;
+  e.actor = 3;
+  e.target = 12;
+  e.weapon = 2;
+  e.damage = 115;
+  e.headshot = true;
+  e.from = {1, 2, 3};
+  e.to = {-4, 5, -6};
+  const auto d = decodeEvent(encode(e));
+  REQUIRE(d.has_value());
+  CHECK(d->type == GameEvent::Type::Kill);
+  CHECK(d->actor == 3);
+  CHECK(d->target == 12);
+  CHECK(d->damage == 115);
+  CHECK(d->headshot);
+  CHECK(d->to == glm::vec3(-4, 5, -6));
 }
