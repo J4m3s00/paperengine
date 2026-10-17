@@ -148,6 +148,11 @@ void ClientSession::onEvent(std::span<const std::uint8_t> packet) {
   }
 }
 
+void ClientSession::adoptAccept(const AcceptMsg &accept) {
+  m_slot = accept.slot;
+  m_status = Status::Joining;
+}
+
 void ClientSession::onAccept(std::span<const std::uint8_t> packet) {
   if (const auto accept = decodeAccept(packet)) {
     m_slot = accept->slot;

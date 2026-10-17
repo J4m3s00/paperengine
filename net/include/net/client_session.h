@@ -50,6 +50,10 @@ public:
                 const WeaponDb &weapons, MovementParams params, std::string name,
                 ClientConfig config = {});
 
+  // The caller did the handshake itself (to learn the map before building the
+  // world): continue as if this session had received `accept`.
+  void adoptAccept(const AcceptMsg &accept);
+
   // One client tick: receive packets, reconcile, predict this input, send.
   void tick(const UserCmd &input);
 

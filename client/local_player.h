@@ -25,13 +25,16 @@ class LocalPlayer {
 public:
   LocalPlayer(const Paper::CollisionWorld &world, const Paper::MovementCvars &movement,
               Paper::CvarRegistry &registry = Paper::cvars())
-      : m_world(world), m_movement(movement), m_step(Paper::kServerTickSeconds),
+      : m_world(&world), m_movement(movement), m_step(Paper::kServerTickSeconds),
         m_sensitivity(registry.add<float>("sensitivity", 2.0F, 0.01F, 50.0F,
                                           "Mouse sensitivity (CS: degrees = 0.022 * value)")) {}
 
   // Online play: the session predicts and reconciles instead of the local
   // movement code (it runs the same `movePlayer`). Null = offline.
   void setSession(Paper::ClientSession *session) { m_session = session; }
+
+  // The map changed (the new world must outlive its use).
+  void setWorld(const Paper::CollisionWorld &world) { m_world = &world; }
 
   void respawn(const glm::vec3 &origin, float yaw) {
     m_state = {};
@@ -122,7 +125,7 @@ public:
       if (m_recording) {
         m_recording->cmds.push_back(cmd);
       }
-      Paper::movePlayer(m_state, cmd, m_world, params, Paper::kDefaultMaxSpeed,
+      Paper::movePlayer(m_state, cmd, *m_world, params, Paper::kDefaultMaxSpeed,
                         static_cast<float>(m_step.stepSeconds()));
     }
 
@@ -162,7 +165,7 @@ private:
   static constexpr float kMaxPitch = glm::radians(89.0F);
   static constexpr float kEyeSpeed = 200.0F; // units per second
 
-  const Paper::CollisionWorld &m_world;
+  const Paper::CollisionWorld *m_world;
   const Paper::MovementCvars &m_movement;
   Paper::FixedTimestep m_step;
   Paper::Cvar<float> &m_sensitivity;

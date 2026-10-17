@@ -65,6 +65,25 @@ public:
     }
   }
 
+  // Hides everything this view put into the scene (when leaving a match).
+  void hideAll() {
+    for (const entt::entity e : {m_gun, m_flash}) {
+      transform(e).scale = glm::vec3(0.0F);
+    }
+    for (auto &pair : m_markers) {
+      transform(pair.first).scale = glm::vec3(0.0F);
+      transform(pair.second).scale = glm::vec3(0.0F);
+    }
+    for (auto *pool : {&m_tracers, &m_impacts}) {
+      for (Timed &t : *pool) {
+        t.life = 0.0F;
+        transform(t.entity).scale = glm::vec3(0.0F);
+      }
+    }
+    m_killFeed.clear();
+    m_banner.age = 1000.0F;
+  }
+
   // Call once per frame before the scene is rendered. `view` is the camera
   // the player sees through.
   void update(float dt, const Paper::Camera &view, Paper::ClientSession &session,
