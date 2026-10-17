@@ -48,7 +48,7 @@ target_link_libraries(core
   PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
           spirv-reflect-static
           fastgltf::fastgltf)
-target_compile_options(core PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(core PRIVATE ${PAPER_WARNINGS})
 target_compile_definitions(core PRIVATE GLFW_INCLUDE_NONE)
 
 # VMA is a third-party single header; keep its warnings out of our build.

@@ -1,0 +1,55 @@
+name: Release (Windows)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:   # manual run builds the zip as a workflow artifact only
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Vulkan SDK (glslc + headers)
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\vulkan-sdk.exe"
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe" -OutFile $installer
+          Start-Process $installer -Wait -ArgumentList "--accept-licenses --default-answer --confirm-command install"
+          $sdk = (Get-ChildItem C:\VulkanSDK | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+          "$sdk\Bin" >> $env:GITHUB_PATH
+
+      - name: Configure
+        run: cmake --preset release -DCMAKE_CXX_COMPILER_LAUNCHER= -DCMAKE_C_COMPILER_LAUNCHER=
+
+      - name: Build
+        run: cmake --build build/release
+
+      - name: Test
+        run: ctest --test-dir build/release --output-on-failure
+
+      - name: Package
+        run: |
+          cmake --install build/release --prefix dist/paperengine --component game
+          Compress-Archive -Path dist/paperengine -DestinationPath paperengine-windows-x64.zip
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          # GitHub zips artifacts itself; upload the folder to avoid a zip in a zip.
+          name: paperengine-windows-x64
+          path: dist/paperengine
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: paperengine-windows-x64.zip
+          generate_release_notes: true
