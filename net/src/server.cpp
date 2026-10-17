@@ -162,7 +162,7 @@ void Server::handleHello(PeerId peer, std::span<const std::uint8_t> packet) {
   spdlog::info("player '{}' joined (slot {})", hello->name, slot);
   m_transport.send(peer, Channel::Reliable,
                    encode(AcceptMsg{slot, m_config.tickRate, m_config.snapshotRate, m_tick,
-                                    m_config.map}));
+                                    m_config.map, m_config.mapChecksum}));
 }
 
 void Server::handleUserCmds(Client &client, std::span<const std::uint8_t> packet) {

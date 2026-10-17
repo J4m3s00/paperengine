@@ -37,6 +37,8 @@ struct AcceptMsg {
   std::uint16_t snapshotRate = 0;
   std::uint32_t serverTick = 0;
   std::string map;
+  // mapChecksum() of the server's map; the client compares it with its copy.
+  std::uint32_t mapChecksum = 0;
 };
 struct RejectMsg {
   std::string reason;

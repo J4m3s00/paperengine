@@ -38,6 +38,7 @@ struct ServerConfig {
   // Snapshots per second; tickRate must be a multiple of it.
   std::uint16_t snapshotRate = 64;
   std::string map = "dev_world";
+  std::uint32_t mapChecksum = 0;
   std::vector<SpawnPoint> spawns;
   MovementParams movement;
   // Usercmds a client may have queued; beyond this the oldest are dropped.

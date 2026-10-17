@@ -461,11 +461,11 @@
   {"type": "spawn_t", "origin": [0, 2, 600], "yaw": 0},
   {"type": "spawn_t", "origin": [200, 2, 600], "yaw": 0},
   {"type": "spawn_t", "origin": [400, 2, 600], "yaw": 0},
-  {"type": "spawn_ct", "origin": [-400, 2, -1200], "yaw": 180},
+  {"type": "spawn_ct", "origin": [-300, 2, -1200], "yaw": 180},
   {"type": "spawn_ct", "origin": [-200, 2, -1200], "yaw": 180},
   {"type": "spawn_ct", "origin": [0, 2, -1200], "yaw": 180},
   {"type": "spawn_ct", "origin": [200, 2, -1200], "yaw": 180},
-  {"type": "spawn_ct", "origin": [400, 2, -1200], "yaw": 180},
+  {"type": "spawn_ct", "origin": [300, 2, -1200], "yaw": 180},
   {
    "type": "spawn",
    "origin": [

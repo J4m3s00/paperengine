@@ -314,6 +314,7 @@ std::vector<std::uint8_t> encode(const AcceptMsg &msg) {
   w.write(msg.snapshotRate, 16);
   w.write(msg.serverTick, 32);
   writeString(w, msg.map);
+  w.write(msg.mapChecksum, 32);
   return w.take();
 }
 std::vector<std::uint8_t> encode(const RejectMsg &msg) {
@@ -403,6 +404,7 @@ std::expected<AcceptMsg, Error> decodeAccept(std::span<const std::uint8_t> packe
   m.snapshotRate = static_cast<std::uint16_t>(r.read(16));
   m.serverTick = r.read(32);
   m.map = readString(r);
+  m.mapChecksum = r.read(32);
   if (!typeOk || !r.ok() || m.slot >= kMaxPlayerSlots) {
     return std::unexpected(bad("accept"));
   }

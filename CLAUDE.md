@@ -55,6 +55,8 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 
 - Rules and menu (ADR 0015): `game/rules.h` has the pure `RoundManager` (team elimination), `RulesCvars` (`mp_*`), `restrictCmd`. `Server` runs it when `ServerConfig::teamplay` is set (teams, team spawns, freeze, no mid-round respawn, stats, `kickAll`, `takeMatchRestarted` for map rotation); snapshots carry `MatchState` and per-player `PlayerInfo`. Server flags: `--config server.cfg`, `--maps a,b,c`, `--set cvar value`. The client opens a menu without `--connect`/`--offline`; it does the Hello/Accept handshake itself, loads the map the server names, then continues in `ClientSession::adoptAccept`. Escape opens the pause menu, Tab shows the scoreboard.
 
+- Editor (ADR 0016): `editor/` is the ImGui map editor (`./build/debug/editor/editor [map]`); its model is `game/map_edit.h` (`MapEditor`: edits, undo, picking, validation, headless-tested). `game/map.h` keeps brush kinds (box/ramp/planes) and has `serializeMap`/`saveMap`/`mapChecksum`; the server sends the checksum in `Accept` and the client rejects a mismatch. `mapc map.json` validates maps and prints the checksum. `mapview/` shares brush-to-mesh and the material palette between client and editor. Data folders resolve through `Paper::dataDir` (`base/paths.h`).
+
 ## Conventions
 
 Compiler flags `${PAPER_WARNINGS}` apply to `core` only. Code style: 2-space indent, `m_` member prefix, `[[nodiscard]]` getters, deleted copy/move on RAII Vulkan wrappers (clang-format LLVM-like style).

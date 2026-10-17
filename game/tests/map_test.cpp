@@ -232,3 +232,24 @@ TEST_CASE("degenerate authored shapes are rejected") {
   box.maxs.x = -1.0F;
   CHECK_FALSE(box.rebuild().has_value());
 }
+
+TEST_CASE("the map checksum follows the collision, not the bookkeeping") {
+  const auto a = parseMap(R"({"version":1,"brushes":[{"box":[0,0,0,10,10,10],"material":"wall"}],
+    "entities":[{"type":"spawn","origin":[0,20,0]}]})");
+  const auto sameShape = parseMap(R"({"version":1,"brushes":[{"box":[0,0,0,10,10,10],"material":"floor"}]})");
+  const auto bigger = parseMap(R"({"version":1,"brushes":[{"box":[0,0,0,10,10,11]}]})");
+  REQUIRE(a.has_value());
+  REQUIRE(sameShape.has_value());
+  REQUIRE(bigger.has_value());
+  CHECK(mapChecksum(*a) == mapChecksum(*sameShape)); // material and entities do not matter
+  CHECK(mapChecksum(*a) != mapChecksum(*bigger));
+  // And a saved-then-loaded map keeps its checksum.
+  const auto again = parseMap(serializeMap(*a));
+  REQUIRE(again.has_value());
+  CHECK(mapChecksum(*a) == mapChecksum(*again));
+  for (const char *name : {"dev_world.json", "arena.json"}) {
+    const auto m = loadMap(std::filesystem::path(PAPER_MAPS_DIR) / name);
+    REQUIRE(m.has_value());
+    CHECK(mapChecksum(*m) == mapChecksum(*parseMap(serializeMap(*m))));
+  }
+}

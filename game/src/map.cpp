@@ -169,6 +169,26 @@ std::expected<void, Error> MapBrush::rebuild() {
   return {};
 }
 
+std::uint32_t mapChecksum(const MapData &map) {
+  // FNV-1a over the exact bit patterns, so any change of a plane shows.
+  std::uint64_t h = 1469598103934665603ULL;
+  const auto feed = [&](const void *data, std::size_t n) {
+    const auto *bytes = static_cast<const unsigned char *>(data);
+    for (std::size_t i = 0; i < n; ++i) {
+      h = (h ^ bytes[i]) * 1099511628211ULL;
+    }
+  };
+  for (const MapBrush &b : map.brushes) {
+    const std::uint32_t count = static_cast<std::uint32_t>(b.brush.planes.size());
+    feed(&count, sizeof count);
+    for (const Plane &p : b.brush.planes) {
+      const float v[4] = {p.normal.x, p.normal.y, p.normal.z, p.dist};
+      feed(v, sizeof v);
+    }
+  }
+  return static_cast<std::uint32_t>(h ^ (h >> 32));
+}
+
 std::vector<BrushDesc> MapData::brushDescs() const {
   std::vector<BrushDesc> out;
   out.reserve(brushes.size());

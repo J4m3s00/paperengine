@@ -68,12 +68,13 @@ TEST_CASE("handshake messages round trip") {
   const auto hello = decodeHello(encode(HelloMsg{.protocolVersion = 1, .name = "luca"}));
   REQUIRE(hello.has_value());
   CHECK(hello->name == "luca");
-  const auto accept = decodeAccept(encode(AcceptMsg{3, 128, 64, 9000, "dev_world"}));
+  const auto accept = decodeAccept(encode(AcceptMsg{3, 128, 64, 9000, "dev_world", 0xCAFEBABEU}));
   REQUIRE(accept.has_value());
   CHECK(accept->slot == 3);
   CHECK(accept->tickRate == 128);
   CHECK(accept->serverTick == 9000);
   CHECK(accept->map == "dev_world");
+  CHECK(accept->mapChecksum == 0xCAFEBABEU);
   const auto reject = decodeReject(encode(RejectMsg{"server full"}));
   REQUIRE(reject.has_value());
   CHECK(reject->reason == "server full");

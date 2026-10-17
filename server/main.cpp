@@ -133,6 +133,7 @@ int main(int argc, char **argv) {
     cfg.spawnsT = Paper::teamSpawnPoints(game.map, Paper::Team::T);
     cfg.spawnsCT = Paper::teamSpawnPoints(game.map, Paper::Team::CT);
     cfg.map = path.stem().string();
+    cfg.mapChecksum = Paper::mapChecksum(game.map);
     game.server = std::make_unique<Paper::Server>(**transport, *game.world, *weapons, cfg);
     // Practice targets only in free-for-all; team matches are for players.
     if (!cfg.teamplay) {

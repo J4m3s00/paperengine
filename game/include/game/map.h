@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <glm/vec2.hpp>
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <string>
@@ -74,6 +75,10 @@ struct MapData {
 //     "entities": [ { "type": "spawn", "origin": [x, y, z], "yaw": degrees } ] }
 [[nodiscard]] std::expected<MapData, Error> parseMap(std::string_view json);
 [[nodiscard]] std::expected<MapData, Error> loadMap(const std::filesystem::path &path);
+
+// A 32 bit fingerprint of what shapes collision: the planes of every brush, in
+// order. Equal checksums mean client and server collide with the same world.
+[[nodiscard]] std::uint32_t mapChecksum(const MapData &map);
 
 // The inverse of parseMap: JSON v1 with box/ramp/planes brushes as authored.
 [[nodiscard]] std::string serializeMap(const MapData &map);

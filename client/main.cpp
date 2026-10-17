@@ -381,6 +381,11 @@ int main(int argc, char **argv) {
             disconnect("Cannot load the server's map '" + accept->map + "': " + r.error().message);
             return;
           }
+          if (accept->mapChecksum != 0 && accept->mapChecksum != Paper::mapChecksum(world.map)) {
+            disconnect("Your copy of map '" + accept->map +
+                       "' differs from the server's. Get the same map file.");
+            return;
+          }
           player.setWorld(*world.collision);
           session = std::make_unique<Paper::ClientSession>(*transport, serverPeer, *world.collision,
                                                            weapons, movementCvars.params(),
