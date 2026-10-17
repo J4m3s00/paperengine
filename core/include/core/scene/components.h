@@ -8,6 +8,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <vector>
+
 namespace Paper {
 // Local transform relative to the parent (or the world for roots).
 struct Transform {
@@ -49,6 +51,13 @@ lookRotation(const glm::vec3 &direction,
   return glm::quat_cast(
       glm::inverse(glm::lookAt(glm::vec3(0.0F), direction, up)));
 }
+
+// Joint matrices of a skinned mesh, in the mesh's model space: for each joint
+// `jointWorld * inverseBind`. Set it every frame (see the `anim` library); the
+// entity's MeshRenderer must use a skinning shader (pbr_skinned.vert).
+struct SkinPose {
+  std::vector<glm::mat4> joints;
+};
 
 struct MeshRenderer {
   MeshHandle mesh;

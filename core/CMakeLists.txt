@@ -66,6 +66,7 @@ target_include_directories(core SYSTEM PRIVATE ${SPIRV_REFLECT_INCLUDE_DIRS})
 # Compile GLSL shaders to SPIR-V in <build>/shaders at build time.
 set(PAPER_SHADER_SOURCES
   shaders/pbr.vert
+  shaders/pbr_skinned.vert
   shaders/pbr.frag)
 set(PAPER_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 set(PAPER_SHADER_OUTPUTS)

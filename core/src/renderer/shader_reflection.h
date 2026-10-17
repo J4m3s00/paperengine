@@ -34,6 +34,8 @@ struct MaterialLayout {
   std::uint32_t blockSize = 0;
   std::vector<ParamInfo> params;
   std::vector<TextureSlotInfo> textures; // Sorted by binding.
+  // The vertex shader reads joint indices/weights (locations 4 and 5).
+  bool skinned = false;
 
   [[nodiscard]] const ParamInfo *find(std::string_view name) const;
   // Index into `textures`, or -1.

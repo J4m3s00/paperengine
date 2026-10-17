@@ -76,12 +76,17 @@ struct PushConstants {
 };
 static_assert(sizeof(PushConstants) == 128);
 
+// Most joint matrices all skinned meshes of one frame may use together.
+constexpr std::uint32_t kMaxJointMatrices = 8192;
+
 struct FrameData {
   VkCommandPool commandPool = VK_NULL_HANDLE;
   VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
   VkSemaphore imageAvailable = VK_NULL_HANDLE;
   VkFence inFlight = VK_NULL_HANDLE;
   GpuBuffer uniforms;
+  // Set 0, binding 1: joint matrices of skinned meshes (host visible).
+  GpuBuffer joints;
   VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 };
 
@@ -179,6 +184,8 @@ struct DrawItem {
   VkPipeline pipeline;
   VkPipelineLayout pipelineLayout;
   PushConstants push;
+  // Skinned meshes: index of the first joint matrix in the palette.
+  std::uint32_t firstJoint = 0;
 };
 
 // Runs a callback when destroyed; used for raw Vulkan objects in the deletion
@@ -436,15 +443,19 @@ std::expected<void, Error> Renderer::Impl::createDepth() {
 std::expected<void, Error> Renderer::Impl::createDescriptors() {
   const VkDevice device = context->device();
 
-  VkDescriptorSetLayoutBinding binding{};
-  binding.binding = 0;
-  binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  binding.descriptorCount = 1;
-  binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+  bindings[0].binding = 0;
+  bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  bindings[0].descriptorCount = 1;
+  bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  bindings[1].binding = 1;
+  bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  bindings[1].descriptorCount = 1;
+  bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
   VkDescriptorSetLayoutCreateInfo layoutInfo{};
   layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  layoutInfo.bindingCount = 1;
-  layoutInfo.pBindings = &binding;
+  layoutInfo.bindingCount = static_cast<std::uint32_t>(bindings.size());
+  layoutInfo.pBindings = bindings.data();
   if (auto r = vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
                                                    &frameSetLayout),
                        kCode, "vkCreateDescriptorSetLayout");
@@ -452,13 +463,15 @@ std::expected<void, Error> Renderer::Impl::createDescriptors() {
     return r;
   }
 
-  const VkDescriptorPoolSize framePoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                           kFramesInFlight};
+  const std::array<VkDescriptorPoolSize, 2> framePoolSizes{{
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight},
+  }};
   VkDescriptorPoolCreateInfo poolInfo{};
   poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   poolInfo.maxSets = kFramesInFlight;
-  poolInfo.poolSizeCount = 1;
-  poolInfo.pPoolSizes = &framePoolSize;
+  poolInfo.poolSizeCount = static_cast<std::uint32_t>(framePoolSizes.size());
+  poolInfo.pPoolSizes = framePoolSizes.data();
   if (auto r = vkCheck(vkCreateDescriptorPool(device, &poolInfo, nullptr,
                                               &frameDescriptorPool),
                        kCode, "vkCreateDescriptorPool");
@@ -517,7 +530,19 @@ std::expected<void, Error> Renderer::Impl::createDescriptors() {
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.pBufferInfo = &bufferInfo;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    auto joints = GpuBuffer::create(*context, kMaxJointMatrices * sizeof(glm::mat4),
+                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    if (!joints) {
+      return std::unexpected(joints.error());
+    }
+    frames[i].joints = std::move(*joints);
+    const VkDescriptorBufferInfo jointInfo{frames[i].joints.handle(), 0,
+                                           kMaxJointMatrices * sizeof(glm::mat4)};
+    VkWriteDescriptorSet writes[2] = {write, write};
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &jointInfo;
+    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
   }
   return {};
 }
@@ -1091,7 +1116,8 @@ Renderer::Impl::getPipeline(ShaderHandle handle, const ShaderResource &shader,
                                           shader.pipelineLayout,
                                           shader.vertex->module(),
                                           shader.fragment->module(), state,
-                                          key.colorFormat, key.depthFormat});
+                                          key.colorFormat, key.depthFormat,
+                                          shader.layout.skinned});
   if (!pipeline) {
     return std::unexpected(pipeline.error());
   }
@@ -1228,7 +1254,7 @@ void Renderer::Impl::record(VkCommandBuffer cmd, const FrameData &frame,
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
     vkCmdBindIndexBuffer(cmd, draw.mesh->indexBuffer.handle(), 0,
                          VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, draw.mesh->indexCount, 1, 0, 0, 0);
+    vkCmdDrawIndexed(cmd, draw.mesh->indexCount, 1, 0, 0, draw.firstJoint);
   }
 
   if (uiFrameReady) {
@@ -1388,11 +1414,12 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
   // Built before acquiring an image so a failure (e.g. pipeline creation)
   // leaves the swapchain untouched.
   drawList.clear();
+  std::uint32_t jointCount = 0;
+  auto *jointPalette = static_cast<glm::mat4 *>(frame.joints.mapped());
   for (const auto [entity, world, meshRenderer] :
        scene.registry()
            .view<const WorldTransform, const MeshRenderer>()
            .each()) {
-    (void)entity;
     const MeshResource *mesh = meshes.get(meshRenderer.mesh);
     MaterialResource *material = materials.get(meshRenderer.material);
     assert(mesh != nullptr && "MeshRenderer references a stale mesh handle");
@@ -1408,11 +1435,26 @@ std::expected<void, Error> Renderer::Impl::render(const Scene &scene,
       return std::unexpected(pipeline.error());
     }
     updateMaterial(*material, *shader);
+    std::uint32_t firstJoint = 0;
+    if (const auto *pose = scene.registry().try_get<SkinPose>(entity)) {
+      if (jointCount + pose->joints.size() > kMaxJointMatrices) {
+        spdlog::warn("Too many skinned joints this frame ({}); skipping a mesh", kMaxJointMatrices);
+        continue;
+      }
+      firstJoint = jointCount;
+      std::memcpy(jointPalette + jointCount, pose->joints.data(),
+                  pose->joints.size() * sizeof(glm::mat4));
+      jointCount += static_cast<std::uint32_t>(pose->joints.size());
+    }
     drawList.push_back({mesh,
                         material,
                         *pipeline,
                         shader->pipelineLayout,
-                        {world.matrix, glm::transpose(glm::inverse(world.matrix))}});
+                        {world.matrix, glm::transpose(glm::inverse(world.matrix))},
+                        firstJoint});
+  }
+  if (jointCount > 0) {
+    frame.joints.flush();
   }
   {
     PAPER_ZONE("sort draw list");

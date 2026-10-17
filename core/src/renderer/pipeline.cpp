@@ -47,18 +47,21 @@ createGraphicsPipeline(const PipelineInputs &in) {
 
   const VkVertexInputBindingDescription vertexBinding{
       0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-  const std::array<VkVertexInputAttributeDescription, 4> vertexAttributes{{
+  const std::array<VkVertexInputAttributeDescription, 6> vertexAttributes{{
       {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
       {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
       {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
       {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
+      {4, 0, VK_FORMAT_R8G8B8A8_UINT, offsetof(Vertex, joints)},
+      {5, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(Vertex, weights)},
   }};
   VkPipelineVertexInputStateCreateInfo vertexInput{};
   vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   vertexInput.vertexBindingDescriptionCount = 1;
   vertexInput.pVertexBindingDescriptions = &vertexBinding;
+  // Joint attributes only when the shader reads them (keeps validation quiet).
   vertexInput.vertexAttributeDescriptionCount =
-      static_cast<std::uint32_t>(vertexAttributes.size());
+      static_cast<std::uint32_t>(in.skinned ? vertexAttributes.size() : 4);
   vertexInput.pVertexAttributeDescriptions = vertexAttributes.data();
 
   VkPipelineInputAssemblyStateCreateInfo inputAssembly{};

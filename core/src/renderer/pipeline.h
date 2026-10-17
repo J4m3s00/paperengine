@@ -16,6 +16,8 @@ struct PipelineInputs {
   RenderState state;
   VkFormat colorFormat;
   VkFormat depthFormat;
+  // The vertex shader consumes joint indices and weights.
+  bool skinned = false;
 };
 
 // Graphics pipeline for the fixed engine vertex layout (ADR 0004): dynamic

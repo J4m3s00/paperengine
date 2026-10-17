@@ -19,6 +19,8 @@ constexpr ExpectedInput kVertexInputs[] = {
     {1, SPV_REFLECT_FORMAT_R32G32B32_SFLOAT},
     {2, SPV_REFLECT_FORMAT_R32G32_SFLOAT},
     {3, SPV_REFLECT_FORMAT_R32G32B32A32_SFLOAT},
+    {4, SPV_REFLECT_FORMAT_R32G32B32A32_UINT},
+    {5, SPV_REFLECT_FORMAT_R32G32B32A32_SFLOAT},
 };
 
 class ReflectModule {
@@ -91,7 +93,7 @@ std::unexpected<Error> fail(std::string message) {
   return std::unexpected(Error{kCode, std::move(message)});
 }
 
-std::expected<void, Error> checkVertexInputs(SpvReflectShaderModule &module) {
+std::expected<void, Error> checkVertexInputs(SpvReflectShaderModule &module, bool &skinned) {
   std::uint32_t count = 0;
   spvReflectEnumerateInputVariables(&module, &count, nullptr);
   std::vector<SpvReflectInterfaceVariable *> inputs(count);
@@ -100,6 +102,7 @@ std::expected<void, Error> checkVertexInputs(SpvReflectShaderModule &module) {
     if ((input->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) != 0) {
       continue;
     }
+    skinned = skinned || input->location == 4 || input->location == 5;
     bool matched = false;
     for (const ExpectedInput &expected : kVertexInputs) {
       if (expected.location == input->location) {
@@ -114,7 +117,7 @@ std::expected<void, Error> checkVertexInputs(SpvReflectShaderModule &module) {
     if (!matched) {
       return fail("Vertex input at location " +
                   std::to_string(input->location) +
-                  " is not part of the engine vertex layout (0..3)");
+                  " is not part of the engine vertex layout (0..5)");
     }
   }
   return {};
@@ -127,8 +130,9 @@ std::expected<MaterialLayout, Error> reflectStage(
   if (!module.create(spirv)) {
     return fail("SPIR-V reflection failed: invalid shader module");
   }
+  bool skinned = false;
   if (isVertex) {
-    if (auto r = checkVertexInputs(module.get()); !r) {
+    if (auto r = checkVertexInputs(module.get(), skinned); !r) {
       return std::unexpected(r.error());
     }
   }
@@ -180,6 +184,7 @@ std::expected<MaterialLayout, Error> reflectStage(
     }
   }
   std::ranges::sort(layout.textures, {}, &TextureSlotInfo::binding);
+  layout.skinned = skinned;
   return layout;
 }
 } // namespace
@@ -256,6 +261,7 @@ reflectMaterialLayout(std::span<const std::uint32_t> vertexSpirv,
   // Merge: the uniform block may appear in both stages but must be identical;
   // texture slots are the union (same binding => same name).
   MaterialLayout merged = std::move(*fragment);
+  merged.skinned = vertex->skinned;
   if (vertex->blockSize > 0) {
     if (merged.blockSize == 0) {
       merged.blockSize = vertex->blockSize;
