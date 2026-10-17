@@ -257,6 +257,9 @@ int main(int argc, char **argv) {
   }
 
   bool f1Held = false;
+  bool escHeld = false;
+  bool mouseReleased = false;
+  bool cursorWasFree = false;
   bool rHeld = false;
   int frame = 0;
   int shotFrame = -1;
@@ -274,18 +277,28 @@ int main(int argc, char **argv) {
         window->requestClose();
       }
     }
-    if (window->keyDown(Paper::Key::Escape)) {
-      window->requestClose();
+    // Escape frees the mouse (the game keeps running); clicking the game view
+    // grabs it again. The window's close button quits.
+    const bool esc = window->keyDown(Paper::Key::Escape);
+    if (esc && !escHeld) {
+      mouseReleased = !mouseReleased;
+    } else if (mouseReleased && !overlay.visible() && window->mouseDown(Paper::MouseButton::Left) &&
+               !renderer->uiWantsMouse()) {
+      mouseReleased = false;
     }
+    escHeld = esc;
 
-    // F1 toggles the debug overlay; with it open the cursor is free.
+    // F1 toggles the debug overlay; with it open the cursor is free too.
     const bool f1 = window->keyDown(Paper::Key::F1);
     if (f1 && !f1Held) {
       overlay.toggle();
-      window->setCursorMode(overlay.visible() ? Paper::CursorMode::Normal
-                                              : Paper::CursorMode::Captured);
     }
     f1Held = f1;
+    const bool cursorFree = overlay.visible() || mouseReleased;
+    if (screenshotPath == nullptr && cursorFree != cursorWasFree) {
+      window->setCursorMode(cursorFree ? Paper::CursorMode::Normal : Paper::CursorMode::Captured);
+      cursorWasFree = cursorFree;
+    }
     const bool r = window->keyDown(Paper::Key::T);
     if (r && !rHeld && !session) {
       player.respawn(spawnOrigin, spawnYaw);
@@ -304,7 +317,7 @@ int main(int argc, char **argv) {
     }
     {
       PAPER_ZONE("player update");
-      player.update(*window, lastFrameSeconds, !overlay.visible());
+      player.update(*window, lastFrameSeconds, !cursorFree);
     }
     if (session) {
       combatView->update(lastFrameSeconds, player.camera(camera), *session, collision);
