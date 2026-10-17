@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 # Static MSVC runtime so a Windows release runs without the VC++ redistributable.
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
-project(myengine LANGUAGES CXX VERSION 0.1.0)
+project(myengine LANGUAGES CXX VERSION 0.0.1)
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   add_compile_options(/utf-8)
