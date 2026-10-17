@@ -23,64 +23,25 @@ glm::vec3 vec3Of(const Json &j, const char *what) {
   return {j[0].get<float>(), j[1].get<float>(), j[2].get<float>()};
 }
 
-BrushDesc rampBrush(const Json &r) {
+RampDef rampDefOf(const Json &r) {
   if (!r.contains("min") || !r.contains("max") || !r.contains("low") || !r.contains("high") ||
       !r.contains("rising")) {
     fail("ramp needs min, max, low, high and rising");
   }
-  const float minX = r["min"].at(0).get<float>();
-  const float minZ = r["min"].at(1).get<float>();
-  const float maxX = r["max"].at(0).get<float>();
-  const float maxZ = r["max"].at(1).get<float>();
-  const float low = r["low"].get<float>();
-  const float high = r["high"].get<float>();
-  const float bottom = r.value("bottom", std::min(low, high) - 64.0F);
-  const std::string rising = r["rising"].get<std::string>();
-
-  glm::vec3 u(0.0F);
-  float lowCoord = 0.0F; // u . (the low end of the ramp)
-  float length = 0.0F;
-  if (rising == "+x") {
-    u = {1, 0, 0};
-    lowCoord = minX;
-    length = maxX - minX;
-  } else if (rising == "-x") {
-    u = {-1, 0, 0};
-    lowCoord = -maxX;
-    length = maxX - minX;
-  } else if (rising == "+z") {
-    u = {0, 0, 1};
-    lowCoord = minZ;
-    length = maxZ - minZ;
-  } else if (rising == "-z") {
-    u = {0, 0, -1};
-    lowCoord = -maxZ;
-    length = maxZ - minZ;
-  } else {
-    fail("ramp rising must be +x, -x, +z or -z");
-  }
-  if (length <= 0.0F || maxX <= minX || maxZ <= minZ) {
-    fail("ramp max must be greater than min");
-  }
-  if (bottom >= std::min(low, high)) {
-    fail("ramp bottom must be below the ramp");
-  }
-  // Surface: y = low + slope * (u . p - lowCoord)  ->  n . p = dist
-  const float slope = (high - low) / length;
-  const glm::vec3 n(-slope * u.x, 1.0F, -slope * u.z);
-  const float dist = low - slope * lowCoord;
-  return BrushDesc{{{n, dist},
-                    {{0, -1, 0}, -bottom},
-                    {{1, 0, 0}, maxX},
-                    {{-1, 0, 0}, -minX},
-                    {{0, 0, 1}, maxZ},
-                    {{0, 0, -1}, -minZ}}};
+  RampDef d;
+  d.min = {r["min"].at(0).get<float>(), r["min"].at(1).get<float>()};
+  d.max = {r["max"].at(0).get<float>(), r["max"].at(1).get<float>()};
+  d.low = r["low"].get<float>();
+  d.high = r["high"].get<float>();
+  d.bottom = r.value("bottom", std::min(d.low, d.high) - 64.0F);
+  d.rising = r["rising"].get<std::string>();
+  return d;
 }
-
 MapBrush parseBrush(const Json &j) {
   MapBrush out;
   out.material = j.value("material", std::string());
   if (j.contains("box")) {
+    out.kind = BrushKind::Box;
     const Json &b = j["box"];
     if (!b.is_array() || b.size() != 6) {
       fail("box must be [minX, minY, minZ, maxX, maxY, maxZ]");
@@ -90,10 +51,13 @@ MapBrush parseBrush(const Json &j) {
     if (maxs.x <= mins.x || maxs.y <= mins.y || maxs.z <= mins.z) {
       fail("box max must be greater than min on every axis");
     }
-    out.brush = boxBrush(mins, maxs);
+    out.mins = mins;
+    out.maxs = maxs;
   } else if (j.contains("ramp")) {
-    out.brush = rampBrush(j["ramp"]);
+    out.kind = BrushKind::Ramp;
+    out.ramp = rampDefOf(j["ramp"]);
   } else if (j.contains("planes")) {
+    out.kind = BrushKind::Planes;
     for (const Json &p : j["planes"]) {
       if (!p.is_array() || p.size() != 4) {
         fail("each plane must be [nx, ny, nz, dist]");
@@ -103,6 +67,9 @@ MapBrush parseBrush(const Json &j) {
     }
   } else {
     fail("brush needs one of: box, ramp, planes");
+  }
+  if (auto built = out.rebuild(); !built) {
+    fail(built.error().message);
   }
   return out;
 }
@@ -115,6 +82,92 @@ MapEntity parseEntity(const Json &j) {
   return e;
 }
 } // namespace
+
+std::expected<BrushDesc, Error> rampPlanes(const RampDef &r) {
+  const auto invalid = [](const char *m) { return std::unexpected(Error{ErrorCode::Asset, m}); };
+  glm::vec3 u(0.0F);
+  float lowCoord = 0.0F; // u . (the low end of the ramp)
+  float length = 0.0F;
+  if (r.rising == "+x") {
+    u = {1, 0, 0};
+    lowCoord = r.min.x;
+    length = r.max.x - r.min.x;
+  } else if (r.rising == "-x") {
+    u = {-1, 0, 0};
+    lowCoord = -r.max.x;
+    length = r.max.x - r.min.x;
+  } else if (r.rising == "+z") {
+    u = {0, 0, 1};
+    lowCoord = r.min.y;
+    length = r.max.y - r.min.y;
+  } else if (r.rising == "-z") {
+    u = {0, 0, -1};
+    lowCoord = -r.max.y;
+    length = r.max.y - r.min.y;
+  } else {
+    return invalid("ramp rising must be +x, -x, +z or -z");
+  }
+  if (length <= 0.0F || r.max.x <= r.min.x || r.max.y <= r.min.y) {
+    return invalid("ramp max must be greater than min");
+  }
+  if (r.bottom >= std::min(r.low, r.high)) {
+    return invalid("ramp bottom must be below the ramp");
+  }
+  // Surface: y = low + slope * (u . p - lowCoord)  ->  n . p = dist
+  const float slope = (r.high - r.low) / length;
+  const glm::vec3 n(-slope * u.x, 1.0F, -slope * u.z);
+  const float dist = r.low - slope * lowCoord;
+  return BrushDesc{{{n, dist},
+                    {{0, -1, 0}, -r.bottom},
+                    {{1, 0, 0}, r.max.x},
+                    {{-1, 0, 0}, -r.min.x},
+                    {{0, 0, 1}, r.max.y},
+                    {{0, 0, -1}, -r.min.y}}};
+}
+
+MapBrush MapBrush::box(const glm::vec3 &mins, const glm::vec3 &maxs, std::string material) {
+  MapBrush b;
+  b.kind = BrushKind::Box;
+  b.mins = mins;
+  b.maxs = maxs;
+  b.material = std::move(material);
+  b.brush = boxBrush(mins, maxs);
+  return b;
+}
+
+MapBrush MapBrush::makeRamp(const RampDef &ramp, std::string material) {
+  MapBrush b;
+  b.kind = BrushKind::Ramp;
+  b.ramp = ramp;
+  b.material = std::move(material);
+  if (auto planes = rampPlanes(ramp)) {
+    b.brush = std::move(*planes);
+  }
+  return b;
+}
+
+std::expected<void, Error> MapBrush::rebuild() {
+  switch (kind) {
+  case BrushKind::Box:
+    if (maxs.x <= mins.x || maxs.y <= mins.y || maxs.z <= mins.z) {
+      return std::unexpected(
+          Error{ErrorCode::Asset, "box max must be greater than min on every axis"});
+    }
+    brush = boxBrush(mins, maxs);
+    return {};
+  case BrushKind::Ramp: {
+    auto planes = rampPlanes(ramp);
+    if (!planes) {
+      return std::unexpected(planes.error());
+    }
+    brush = std::move(*planes);
+    return {};
+  }
+  case BrushKind::Planes:
+    return {};
+  }
+  return {};
+}
 
 std::vector<BrushDesc> MapData::brushDescs() const {
   std::vector<BrushDesc> out;
@@ -187,5 +240,71 @@ std::expected<MapData, Error> loadMap(const std::filesystem::path &path) {
     map.error().message = path.string() + ": " + map.error().message;
   }
   return map;
+}
+} // namespace Paper
+
+namespace Paper {
+std::string serializeMap(const MapData &map) {
+  Json root;
+  root["version"] = 1;
+  Json brushes = Json::array();
+  for (const MapBrush &b : map.brushes) {
+    Json j;
+    switch (b.kind) {
+    case BrushKind::Box:
+      j["box"] = {b.mins.x, b.mins.y, b.mins.z, b.maxs.x, b.maxs.y, b.maxs.z};
+      break;
+    case BrushKind::Ramp:
+      j["ramp"] = {{"min", {b.ramp.min.x, b.ramp.min.y}},
+                   {"max", {b.ramp.max.x, b.ramp.max.y}},
+                   {"low", b.ramp.low},
+                   {"high", b.ramp.high},
+                   {"bottom", b.ramp.bottom},
+                   {"rising", b.ramp.rising}};
+      break;
+    case BrushKind::Planes: {
+      Json planes = Json::array();
+      for (const Plane &p : b.brush.planes) {
+        planes.push_back({p.normal.x, p.normal.y, p.normal.z, p.dist});
+      }
+      j["planes"] = planes;
+      break;
+    }
+    }
+    if (!b.material.empty()) {
+      j["material"] = b.material;
+    }
+    brushes.push_back(std::move(j));
+  }
+  root["brushes"] = std::move(brushes);
+  Json entities = Json::array();
+  for (const MapEntity &e : map.entities) {
+    entities.push_back({{"type", e.type},
+                        {"origin", {e.origin.x, e.origin.y, e.origin.z}},
+                        {"yaw", glm::degrees(e.yaw)}});
+  }
+  root["entities"] = std::move(entities);
+  return root.dump(1);
+}
+
+std::expected<void, Error> saveMap(const MapData &map, const std::filesystem::path &path) {
+  // Write next to the target first so a crash never leaves half a map.
+  const std::filesystem::path temp = path.string() + ".tmp";
+  {
+    std::ofstream file(temp);
+    if (!file) {
+      return std::unexpected(Error{ErrorCode::Io, "cannot write '" + temp.string() + "'"});
+    }
+    file << serializeMap(map) << "\n";
+    if (!file) {
+      return std::unexpected(Error{ErrorCode::Io, "write failed for '" + temp.string() + "'"});
+    }
+  }
+  std::error_code ec;
+  std::filesystem::rename(temp, path, ec);
+  if (ec) {
+    return std::unexpected(Error{ErrorCode::Io, "cannot replace '" + path.string() + "'"});
+  }
+  return {};
 }
 } // namespace Paper

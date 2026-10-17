@@ -135,3 +135,100 @@ TEST_CASE("the dev world map loads and has a spawn above ground") {
   }
 }
 #endif
+
+namespace {
+void checkSameMap(const MapData &a, const MapData &b) {
+  REQUIRE(a.brushes.size() == b.brushes.size());
+  for (std::size_t i = 0; i < a.brushes.size(); ++i) {
+    CAPTURE(i);
+    CHECK(a.brushes[i].kind == b.brushes[i].kind);
+    CHECK(a.brushes[i].material == b.brushes[i].material);
+    REQUIRE(a.brushes[i].brush.planes.size() == b.brushes[i].brush.planes.size());
+    for (std::size_t p = 0; p < a.brushes[i].brush.planes.size(); ++p) {
+      const Plane &pa = a.brushes[i].brush.planes[p];
+      const Plane &pb = b.brushes[i].brush.planes[p];
+      CHECK(glm::distance(pa.normal, pb.normal) < 1e-5F);
+      CHECK(pa.dist == doctest::Approx(pb.dist).epsilon(1e-5));
+    }
+  }
+  REQUIRE(a.entities.size() == b.entities.size());
+  for (std::size_t i = 0; i < a.entities.size(); ++i) {
+    CHECK(a.entities[i].type == b.entities[i].type);
+    CHECK(glm::distance(a.entities[i].origin, b.entities[i].origin) < 1e-5F);
+    CHECK(a.entities[i].yaw == doctest::Approx(b.entities[i].yaw).epsilon(1e-5));
+  }
+}
+} // namespace
+
+TEST_CASE("brushes remember how they were authored") {
+  const auto map = parseMap(R"({"version":1,"brushes":[
+    {"box":[0,0,0,10,20,30],"material":"wall"},
+    {"ramp":{"min":[0,0],"max":[100,50],"low":0,"high":40,"rising":"+x"}},
+    {"planes":[[1,0,0,5],[-1,0,0,5],[0,1,0,5],[0,-1,0,5],[0,0,1,5],[0,0,-1,5]]}]})");
+  REQUIRE(map.has_value());
+  CHECK(map->brushes[0].kind == BrushKind::Box);
+  CHECK(map->brushes[0].maxs == glm::vec3(10, 20, 30));
+  CHECK(map->brushes[1].kind == BrushKind::Ramp);
+  CHECK(map->brushes[1].ramp.high == 40.0F);
+  CHECK(map->brushes[1].ramp.bottom == -64.0F);
+  CHECK(map->brushes[2].kind == BrushKind::Planes);
+}
+
+TEST_CASE("serializing a map and loading it again gives the same map") {
+  const auto original = parseMap(R"({"version":1,"brushes":[
+    {"box":[-5,0,-5,10,20,30],"material":"wall"},
+    {"ramp":{"min":[0,0],"max":[100,50],"low":0,"high":40,"bottom":-10,"rising":"-z"},"material":"ramp"},
+    {"planes":[[1,0,0,5],[-1,0,0,5],[0,1,0,5],[0,-1,0,5],[0,0,1,5],[0,0,-1,5]]}],
+    "entities":[{"type":"spawn","origin":[1,2,3],"yaw":90},{"type":"bot","origin":[4,5,6]}]})");
+  REQUIRE(original.has_value());
+  const auto again = parseMap(serializeMap(*original));
+  REQUIRE(again.has_value());
+  checkSameMap(*original, *again);
+  CHECK(again->entities[0].yaw == doctest::Approx(glm::half_pi<float>()));
+}
+
+TEST_CASE("the dev world and the arena survive a save and load") {
+  for (const char *name : {"dev_world.json", "arena.json"}) {
+    CAPTURE(name);
+    const auto original = loadMap(std::filesystem::path(PAPER_MAPS_DIR) / name);
+    REQUIRE(original.has_value());
+    const auto again = parseMap(serializeMap(*original));
+    REQUIRE(again.has_value());
+    checkSameMap(*original, *again);
+    // Identical collision: a trace through both worlds agrees.
+    const auto wa = original->buildCollision();
+    const auto wb = again->buildCollision();
+    REQUIRE(wa.has_value());
+    REQUIRE(wb.has_value());
+    for (float x = -500.0F; x <= 500.0F; x += 50.0F) {
+      const auto ta = wa->traceHull({x, 300, 700}, {x, 20, -700}, kStandingHull);
+      const auto tb = wb->traceHull({x, 300, 700}, {x, 20, -700}, kStandingHull);
+      CHECK(ta.fraction == tb.fraction);
+      CHECK(ta.normal == tb.normal);
+    }
+  }
+}
+
+TEST_CASE("saveMap writes a file loadMap reads back") {
+  MapData map;
+  map.brushes.push_back(MapBrush::box({0, 0, 0}, {64, 64, 64}, "box"));
+  map.entities.push_back({"spawn", {0, 70, 0}, 0.5F});
+  const auto path = std::filesystem::temp_directory_path() / "paper_save_map_test.json";
+  REQUIRE(saveMap(map, path).has_value());
+  const auto loaded = loadMap(path);
+  std::filesystem::remove(path);
+  REQUIRE(loaded.has_value());
+  checkSameMap(map, *loaded);
+  CHECK_FALSE(saveMap(map, "/nonexistent-dir/x/map.json").has_value());
+}
+
+TEST_CASE("degenerate authored shapes are rejected") {
+  CHECK_FALSE(parseMap(R"({"version":1,"brushes":[{"box":[0,0,0,0,10,10]}]})").has_value());
+  RampDef bad;
+  bad.min = {10, 10};
+  bad.max = {0, 0};
+  CHECK_FALSE(rampPlanes(bad).has_value());
+  MapBrush box = MapBrush::box({0, 0, 0}, {1, 1, 1});
+  box.maxs.x = -1.0F;
+  CHECK_FALSE(box.rebuild().has_value());
+}
