@@ -4,6 +4,7 @@
 #include "core/renderer/renderer.h"
 #include "core/scene/scene.h"
 #include "core/scene/transform_system.h"
+#include "anim/animator.h"
 #include "core/window.h"
 
 #include "fly_camera.h"
@@ -68,9 +69,12 @@ Paper::Image makeDots(std::uint32_t size, std::uint32_t cell) {
 int main(int argc, char **argv) {
   const char *modelPath = nullptr;
   const char *screenshotPath = nullptr;
+  const char *clipName = nullptr;
   for (int i = 1; i < argc; ++i) {
     if (std::string_view(argv[i]) == "--screenshot" && i + 1 < argc) {
       screenshotPath = argv[++i];
+    } else if (std::string_view(argv[i]) == "--clip" && i + 1 < argc) {
+      clipName = argv[++i];
     } else {
       modelPath = argv[i];
     }
@@ -85,6 +89,9 @@ int main(int argc, char **argv) {
   const auto cube = require(renderer->createMesh(Paper::makeCube()));
   const auto shader = require(
       renderer->createShader({"pbr.vert.spv", "pbr.frag.spv"}));
+  // Models with a skeleton are drawn with the skinning vertex shader.
+  const auto skinnedShader = require(
+      renderer->createShader({"pbr_skinned.vert.spv", "pbr.frag.spv"}));
 
   const auto checker = require(
       renderer->createTexture(makeChecker(256, 32), Paper::ColorSpace::Srgb));
@@ -127,6 +134,9 @@ int main(int argc, char **argv) {
   entt::entity parent = entt::null;
   entt::entity child = entt::null;
   std::optional<Paper::ModelHandle> model;
+  std::optional<Paper::Scene::SkinnedInstance> skinned;
+  std::optional<Paper::Animator> animator;
+  std::vector<glm::mat4> skinMatrices;
   FlyCamera flyCamera({3.0F, 2.5F, 5.0F}, {0.0F, 0.0F, 0.0F});
 
   // One directional light and a dim constant ambient.
@@ -137,9 +147,21 @@ int main(int argc, char **argv) {
       Paper::lookRotation(glm::vec3(-0.4F, -0.8F, -0.5F));
 
   if (modelPath != nullptr) {
-    model = require(renderer->loadModel(modelPath, shader));
+    // Load with the skinning shader when the file has a skin (checked by
+    // trying: a static model works with either, a skinned one needs it).
+    model = require(renderer->loadModel(modelPath, skinnedShader));
     const Paper::Model &loaded = renderer->model(*model);
-    scene.instantiate(loaded);
+    if (loaded.animations && !loaded.animations->clips.empty()) {
+      skinned = scene.instantiateSkinned(loaded);
+      animator.emplace(*loaded.animations);
+      int clip = clipName != nullptr ? loaded.animations->findClip(clipName) : 0;
+      animator->play(std::max(clip, 0), 0.0F);
+      spdlog::info("{} clips, {} joints; playing '{}'", loaded.animations->clips.size(),
+                   loaded.animations->skeleton.joints.size(),
+                   loaded.animations->clips[static_cast<std::size_t>(std::max(clip, 0))].name);
+    } else {
+      scene.instantiate(loaded);
+    }
 
     // Frame the model: look at its center from a distance that fits it.
     const glm::vec3 center = (loaded.boundsMin + loaded.boundsMax) * 0.5F;
@@ -220,6 +242,13 @@ int main(int argc, char **argv) {
       require(renderer->setMaterialParam(red, "roughnessFactor", 0.5F + 0.4F * std::sin(t)));
       require(renderer->setMaterialParam(masked, "alphaCutoff", 0.45F + 0.3F * std::sin(t * 2.0F)));
     }
+    if (animator && skinned) {
+      animator->update(lastFrameSeconds);
+      animator->computeMatrices(skinMatrices);
+      for (const entt::entity e : skinned->meshes) {
+        scene.registry().get<Paper::SkinPose>(e).joints = skinMatrices;
+      }
+    }
     Paper::TransformSystem::update(scene);
 
     require(renderer->render(scene, flyCamera.camera()));
@@ -233,6 +262,7 @@ int main(int argc, char **argv) {
   renderer->destroyMaterial(green);
   renderer->destroyMaterial(masked);
   renderer->destroyShader(shader);
+  renderer->destroyShader(skinnedShader);
   renderer->destroyTexture(checker);
   renderer->destroyTexture(dots);
   renderer->destroyMesh(cube);

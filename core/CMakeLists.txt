@@ -44,7 +44,7 @@ add_library(core STATIC
   src/vma_impl.cpp)
 target_include_directories(core PUBLIC include PRIVATE src)
 target_link_libraries(core
-  PUBLIC  base imgui glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
+  PUBLIC  base anim imgui glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
   PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
           spirv-reflect-static
           fastgltf::fastgltf)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "anim/clip.h"
 #include "core/handle.h"
 #include "core/renderer/material.h"
 #include "core/renderer/mesh.h"
@@ -9,6 +10,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,9 @@ struct ModelNode {
   // One entry per glTF primitive of the node's mesh; Scene::instantiate
   // creates a child entity with a MeshRenderer for each.
   std::vector<MeshRenderer> primitives;
+  // The node uses the file's skin: its primitives carry joint weights and
+  // need a SkinPose (see Model::animations).
+  bool skinned = false;
 };
 
 // Result of Renderer::loadModel: a node tree plus the GPU resources it refers
@@ -31,6 +36,9 @@ struct Model {
   // Axis-aligned bounds of all meshes in model space (valid if any mesh).
   glm::vec3 boundsMin{0.0F};
   glm::vec3 boundsMax{0.0F};
+
+  // The skeleton (first skin) and all animation clips, if the file has any.
+  std::shared_ptr<const AnimationLibrary> animations;
 
   std::vector<MeshHandle> meshes;
   std::vector<MaterialHandle> materials;

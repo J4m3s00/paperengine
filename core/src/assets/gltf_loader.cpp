@@ -10,6 +10,8 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cfloat>
 #include <map>
 #include <optional>
@@ -100,6 +102,8 @@ private:
   [[nodiscard]] std::span<const std::byte>
   bufferBytes(const fastgltf::DataSource &source) const;
   void computeBounds();
+  std::expected<void, Error> importAnimations();
+  [[nodiscard]] glm::mat4 globalTransform(std::size_t node, const std::vector<int> &parent) const;
 
   Renderer &m_renderer;
   std::filesystem::path m_path;
@@ -337,7 +341,7 @@ Importer::meshFor(std::size_t meshIndex) {
     }
     const std::size_t count = positions->count;
     MeshData data;
-    data.vertices.assign(count, Vertex{{0, 0, 0}, {0, 0, 0}, {0, 0}, {0, 0, 0, 0}});
+    data.vertices.assign(count, Vertex{{0, 0, 0}, {0, 0, 0}, {0, 0}, {0, 0, 0, 0}, {}, {}});
 
     Aabb bounds;
     fastgltf::iterateAccessorWithIndex<glm::vec3>(
@@ -369,6 +373,38 @@ Importer::meshFor(std::size_t meshIndex) {
       fastgltf::iterateAccessorWithIndex<glm::vec4>(
           m_asset, *tangents, [&](const glm::vec4 &v, std::size_t i) {
             data.vertices[i].tangent = v;
+          });
+    }
+
+    // Skinning: joint indices and weights (quantized to unorm8 summing to 255).
+    const fastgltf::Accessor *joints = attribute("JOINTS_0");
+    const fastgltf::Accessor *weights = attribute("WEIGHTS_0");
+    if (joints != nullptr && weights != nullptr && joints->count == count && weights->count == count) {
+      fastgltf::iterateAccessorWithIndex<glm::uvec4>(
+          m_asset, *joints, [&](const glm::uvec4 &v, std::size_t i) {
+            for (int k = 0; k < 4; ++k) {
+              data.vertices[i].joints[static_cast<std::size_t>(k)] =
+                  static_cast<std::uint8_t>(std::min(v[k], 255U));
+            }
+          });
+      fastgltf::iterateAccessorWithIndex<glm::vec4>(
+          m_asset, *weights, [&](const glm::vec4 &w, std::size_t i) {
+            const float sum = w.x + w.y + w.z + w.w;
+            std::array<int, 4> q{};
+            int total = 0;
+            int biggest = 0;
+            for (int k = 0; k < 4; ++k) {
+              q[static_cast<std::size_t>(k)] =
+                  sum > 0.0F ? static_cast<int>(std::lround(std::max(w[k], 0.0F) / sum * 255.0F)) : 0;
+              total += q[static_cast<std::size_t>(k)];
+              if (q[static_cast<std::size_t>(k)] > q[static_cast<std::size_t>(biggest)]) biggest = k;
+            }
+            // Rounding must not change the sum: give the difference to the largest weight.
+            q[static_cast<std::size_t>(biggest)] += 255 - total;
+            for (int k = 0; k < 4; ++k) {
+              data.vertices[i].weights[static_cast<std::size_t>(k)] =
+                  static_cast<std::uint8_t>(std::clamp(q[static_cast<std::size_t>(k)], 0, 255));
+            }
           });
     }
 
@@ -500,6 +536,7 @@ std::expected<void, Error> Importer::build() {
     for (const std::size_t child : source.children) {
       node.children.push_back(static_cast<std::uint32_t>(child));
     }
+    node.skinned = source.skinIndex.has_value();
     if (source.meshIndex) {
       auto primitives = meshFor(*source.meshIndex);
       if (!primitives) {
@@ -531,7 +568,120 @@ std::expected<void, Error> Importer::build() {
     }
   }
 
+  if (auto r = importAnimations(); !r) {
+    return r;
+  }
   computeBounds();
+  return {};
+}
+
+// Global (scene space) transform of a node: its own and all ancestors'.
+glm::mat4 Importer::globalTransform(std::size_t node, const std::vector<int> &parent) const {
+  glm::mat4 m(1.0F);
+  for (int n = static_cast<int>(node); n >= 0; n = parent[static_cast<std::size_t>(n)]) {
+    m = m_model.nodes[static_cast<std::size_t>(n)].transform.matrix() * m;
+  }
+  return m;
+}
+
+// Skeleton (first skin) and every animation clip of the file.
+std::expected<void, Error> Importer::importAnimations() {
+  if (m_asset.skins.empty()) {
+    return {};
+  }
+  const fastgltf::Skin &skin = m_asset.skins.front();
+  std::vector<int> parent(m_asset.nodes.size(), -1);
+  for (std::size_t i = 0; i < m_asset.nodes.size(); ++i) {
+    for (const std::size_t child : m_asset.nodes[i].children) {
+      parent[child] = static_cast<int>(i);
+    }
+  }
+  std::vector<int> jointOfNode(m_asset.nodes.size(), -1);
+  for (std::size_t j = 0; j < skin.joints.size(); ++j) {
+    jointOfNode[skin.joints[j]] = static_cast<int>(j);
+  }
+
+  auto library = std::make_shared<AnimationLibrary>();
+  Skeleton &skeleton = library->skeleton;
+  skeleton.joints.resize(skin.joints.size());
+  std::vector<glm::mat4> inverseBinds(skin.joints.size(), glm::mat4(1.0F));
+  if (skin.inverseBindMatrices) {
+    const fastgltf::Accessor &acc = m_asset.accessors[*skin.inverseBindMatrices];
+    if (acc.count == skin.joints.size()) {
+      fastgltf::iterateAccessorWithIndex<glm::mat4>(
+          m_asset, acc, [&](const glm::mat4 &m, std::size_t i) { inverseBinds[i] = m; });
+    }
+  }
+  glm::mat4 rootOffset(1.0F);
+  bool haveRoot = false;
+  for (std::size_t j = 0; j < skin.joints.size(); ++j) {
+    const std::size_t node = skin.joints[j];
+    Joint &joint = skeleton.joints[j];
+    joint.name = std::string(m_asset.nodes[node].name);
+    const int p = parent[node];
+    joint.parent = p >= 0 ? jointOfNode[static_cast<std::size_t>(p)] : -1;
+    joint.bind.translation = m_model.nodes[node].transform.position;
+    joint.bind.rotation = m_model.nodes[node].transform.rotation;
+    joint.bind.scale = m_model.nodes[node].transform.scale;
+    joint.inverseBind = inverseBinds[j];
+    if (joint.parent < 0 && !haveRoot) {
+      // The nodes above the skeleton (the armature) place it in the scene.
+      rootOffset = p >= 0 ? globalTransform(static_cast<std::size_t>(p), parent) : glm::mat4(1.0F);
+      haveRoot = true;
+    }
+  }
+  skeleton.rootOffset = rootOffset;
+  if (!skeleton.valid()) {
+    return fail(ErrorCode::Asset, "glTF skin joints are not ordered parent-before-child");
+  }
+
+  for (const fastgltf::Animation &source : m_asset.animations) {
+    AnimationClip clip;
+    clip.name = std::string(source.name);
+    clip.loops = clip.name.size() >= 5 && clip.name.compare(clip.name.size() - 5, 5, "_Loop") == 0;
+    for (const fastgltf::AnimationChannel &channel : source.channels) {
+      if (!channel.nodeIndex || jointOfNode[*channel.nodeIndex] < 0) {
+        continue; // animates something that is not a joint
+      }
+      const fastgltf::AnimationSampler &sampler = source.samplers[channel.samplerIndex];
+      AnimChannel out;
+      out.joint = jointOfNode[*channel.nodeIndex];
+      out.step = sampler.interpolation == fastgltf::AnimationInterpolation::Step;
+      const bool cubic = sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline;
+      switch (channel.path) {
+      case fastgltf::AnimationPath::Translation: out.path = AnimChannel::Path::Translation; break;
+      case fastgltf::AnimationPath::Rotation: out.path = AnimChannel::Path::Rotation; break;
+      case fastgltf::AnimationPath::Scale: out.path = AnimChannel::Path::Scale; break;
+      default: continue; // morph weights are not supported
+      }
+      const fastgltf::Accessor &times = m_asset.accessors[sampler.inputAccessor];
+      out.times.resize(times.count);
+      fastgltf::copyFromAccessor<float>(m_asset, times, out.times.data());
+      const fastgltf::Accessor &values = m_asset.accessors[sampler.outputAccessor];
+      std::vector<glm::vec4> raw(values.count, glm::vec4(0.0F));
+      if (values.type == fastgltf::AccessorType::Vec4) {
+        fastgltf::iterateAccessorWithIndex<glm::vec4>(
+            m_asset, values, [&](const glm::vec4 &v, std::size_t i) { raw[i] = v; });
+      } else {
+        fastgltf::iterateAccessorWithIndex<glm::vec3>(
+            m_asset, values, [&](const glm::vec3 &v, std::size_t i) { raw[i] = glm::vec4(v, 0.0F); });
+      }
+      if (cubic && raw.size() == times.count * 3) {
+        // [in-tangent, value, out-tangent] per key: keep the values.
+        out.values.resize(times.count);
+        for (std::size_t i = 0; i < times.count; ++i) out.values[i] = raw[i * 3 + 1];
+      } else {
+        out.values = std::move(raw);
+      }
+      if (out.values.size() != out.times.size() || out.times.empty()) {
+        continue;
+      }
+      clip.duration = std::max(clip.duration, out.times.back());
+      clip.channels.push_back(std::move(out));
+    }
+    library->clips.push_back(std::move(clip));
+  }
+  m_model.animations = std::move(library);
   return {};
 }
 } // namespace

@@ -40,6 +40,24 @@ entt::entity Scene::instantiate(const Model &model) {
   return root;
 }
 
+Scene::SkinnedInstance Scene::instantiateSkinned(const Model &model) {
+  SkinnedInstance instance;
+  instance.root = createEntity();
+  for (const ModelNode &node : model.nodes) {
+    if (!node.skinned) {
+      continue;
+    }
+    for (const MeshRenderer &primitive : node.primitives) {
+      const entt::entity entity = createEntity();
+      m_registry.emplace<MeshRenderer>(entity, primitive);
+      m_registry.emplace<SkinPose>(entity);
+      setParent(entity, instance.root);
+      instance.meshes.push_back(entity);
+    }
+  }
+  return instance;
+}
+
 void Scene::setParent(entt::entity child, entt::entity parent) {
   assert(child != parent);
 #ifndef NDEBUG
