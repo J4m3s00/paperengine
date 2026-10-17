@@ -170,6 +170,8 @@ int main(int argc, char **argv) {
     flyCamera = FlyCamera(center + glm::normalize(glm::vec3(1.0F, 0.6F, 1.0F)) * distance, center, radius);
     flyCamera.camera().nearPlane = distance * 0.01F;
     flyCamera.camera().farPlane = distance * 20.0F;
+    spdlog::info("bounds min {:.3f} {:.3f} {:.3f} max {:.3f} {:.3f} {:.3f}", loaded.boundsMin.x, loaded.boundsMin.y,
+                 loaded.boundsMin.z, loaded.boundsMax.x, loaded.boundsMax.y, loaded.boundsMax.z);
     spdlog::info("Loaded {} ({} nodes, {} meshes, {} materials, {} textures)", modelPath,
                  loaded.nodes.size(), loaded.meshes.size(), loaded.materials.size(),
                  loaded.textures.size());

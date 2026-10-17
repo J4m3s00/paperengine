@@ -8,6 +8,7 @@
 #include "core/vulkan_context.h"
 #include "core/window.h"
 
+#include "assets/fbx_loader.h"
 #include "assets/gltf_loader.h"
 #include "gpu_resources.h"
 #include "imgui_layer.h"
@@ -1679,7 +1680,11 @@ Renderer::loadModel(const std::filesystem::path &path, ShaderHandle shader) {
     return std::unexpected(Error{ErrorCode::InvalidArgument,
                                  "loadModel: invalid shader handle"});
   }
-  auto model = importGltf(*this, path, shader);
+  std::string extension = path.extension().string();
+  std::transform(extension.begin(), extension.end(), extension.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  auto model = extension == ".fbx" ? importFbx(*this, path, shader)
+                                   : importGltf(*this, path, shader);
   if (!model) {
     return std::unexpected(model.error());
   }

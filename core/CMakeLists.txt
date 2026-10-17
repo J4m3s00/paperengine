@@ -22,6 +22,15 @@ target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURC
 target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
 target_compile_options(imgui PRIVATE -w)
 
+enable_language(C)
+add_library(ufbx STATIC ${ufbx_SOURCE_DIR}/ufbx.c)
+target_include_directories(ufbx SYSTEM PUBLIC ${ufbx_SOURCE_DIR})
+if(MSVC)
+  target_compile_options(ufbx PRIVATE /w)
+else()
+  target_compile_options(ufbx PRIVATE -w)
+endif()
+
 add_library(core STATIC
   src/window.cpp
   src/engine.cpp
@@ -39,6 +48,7 @@ add_library(core STATIC
   src/assets/image.cpp
   src/assets/image_write.cpp
   src/assets/gltf_loader.cpp
+  src/assets/fbx_loader.cpp
   src/scene/scene.cpp
   src/scene/transform_system.cpp
   src/vma_impl.cpp)
@@ -47,7 +57,7 @@ target_link_libraries(core
   PUBLIC  base anim imgui glfw glm::glm spdlog::spdlog EnTT::EnTT Vulkan::Vulkan
   PRIVATE vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
           spirv-reflect-static
-          fastgltf::fastgltf)
+          fastgltf::fastgltf ufbx)
 target_compile_options(core PRIVATE ${PAPER_WARNINGS})
 target_compile_definitions(core PRIVATE GLFW_INCLUDE_NONE)
 

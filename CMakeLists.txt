@@ -83,6 +83,12 @@ FetchContent_Declare(miniaudio
   GIT_TAG        0.11.25
   SOURCE_SUBDIR  do_not_build)
 
+# ufbx: a single-file FBX loader (C). Only fetched; core builds ufbx.c itself.
+FetchContent_Declare(ufbx
+  GIT_REPOSITORY https://github.com/ufbx/ufbx.git
+  GIT_TAG        v0.23.1
+  SOURCE_SUBDIR  do_not_build)
+
 # Dear ImGui has no CMake build; core/CMakeLists.txt builds it from source.
 FetchContent_Declare(imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -96,7 +102,7 @@ if(PAPER_ENABLE_PROFILER)
   FetchContent_MakeAvailable(tracy)
 endif()
 
-FetchContent_MakeAvailable(miniaudio enet nlohmann_json imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
+FetchContent_MakeAvailable(ufbx miniaudio enet nlohmann_json imgui doctest glfw glm spdlog entt spirv-reflect stb_image stb_image_write fastgltf)
 
 enable_testing()
 
