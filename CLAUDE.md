@@ -57,7 +57,7 @@ VS Code tasks ("build debug") and the LLDB launch config "Debug sandbox" wrap th
 
 ## Conventions
 
-Compiler flags `-Wall -Wextra -Wpedantic` apply to `core` only. Code style: 2-space indent, `m_` member prefix, `[[nodiscard]]` getters, deleted copy/move on RAII Vulkan wrappers (clang-format LLVM-like style).
+Compiler flags `${PAPER_WARNINGS}` apply to `core` only. Code style: 2-space indent, `m_` member prefix, `[[nodiscard]]` getters, deleted copy/move on RAII Vulkan wrappers (clang-format LLVM-like style).
 
 ## Agent skills
 
