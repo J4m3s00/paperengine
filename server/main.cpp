@@ -1,4 +1,5 @@
 #include "base/cvar.h"
+#include "base/paths.h"
 #include "base/fixed_timestep.h"
 #include "game/map.h"
 #include "game/weapon_def.h"
@@ -32,7 +33,7 @@ int main(int argc, char **argv) {
   std::vector<std::string> maps;
   std::uint16_t port = Paper::kDefaultServerPort;
   Paper::ServerConfig config;
-  std::string weaponsDir = PAPER_WEAPONS_DIR;
+  std::string weaponsDir = Paper::dataDir("weapons", PAPER_WEAPONS_DIR).string();
   bool movingBots = false;
   std::string configPath;
   std::vector<std::pair<std::string, std::string>> overrides;
@@ -116,7 +117,7 @@ int main(int argc, char **argv) {
     const std::filesystem::path path(name);
     auto map = Paper::loadMap(path.has_parent_path() || path.extension() == ".json"
                                   ? path
-                                  : std::filesystem::path(PAPER_MAPS_DIR) / (name + ".json"));
+                                  : Paper::dataDir("maps", PAPER_MAPS_DIR) / (name + ".json"));
     if (!map) {
       return std::unexpected(map.error());
     }

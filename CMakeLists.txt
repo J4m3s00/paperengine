@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.28)
-project(myengine LANGUAGES CXX)
+# Static MSVC runtime so a Windows release runs without the VC++ redistributable.
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
+project(myengine LANGUAGES CXX VERSION 0.1.0)
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  add_compile_options(/utf-8)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -98,3 +106,19 @@ add_subdirectory(sandbox)
 add_subdirectory(client)
 add_subdirectory(server)
 add_subdirectory(bots)
+
+# Release package: `cmake --install build/release --prefix dist/paperengine --component game`
+# (or `cpack` for a zip). Data folders sit next to the executables, where
+# Paper::dataDir and the renderer look for them.
+install(TARGETS client server RUNTIME DESTINATION . COMPONENT game)
+install(DIRECTORY maps weapons DESTINATION . COMPONENT game)
+install(DIRECTORY ${CMAKE_BINARY_DIR}/shaders DESTINATION . COMPONENT game FILES_MATCHING PATTERN "*.spv")
+install(FILES server.cfg packaging/README.txt DESTINATION . COMPONENT game)
+
+set(CPACK_GENERATOR ZIP)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_ALL game)
+set(CPACK_PACKAGE_NAME "paperengine")
+set(CPACK_PACKAGE_FILE_NAME "paperengine-${CMAKE_SYSTEM_NAME}")
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+include(CPack)

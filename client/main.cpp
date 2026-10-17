@@ -6,6 +6,7 @@
 #include "world_mesh.h"
 
 #include "base/cvar.h"
+#include "base/paths.h"
 #include "base/profiler.h"
 #include "core/debug/debug_overlay.h"
 #include "core/renderer/renderer.h"
@@ -205,7 +206,7 @@ int main(int argc, char **argv) {
     const std::filesystem::path p(name);
     return p.has_parent_path() || p.extension() == ".json"
                ? p
-               : std::filesystem::path(PAPER_MAPS_DIR) / (name + ".json");
+               : Paper::dataDir("maps", PAPER_MAPS_DIR) / (name + ".json");
   };
   const auto loadWorld = [&](const std::string &name) -> std::expected<void, Paper::Error> {
     const auto path = mapPathOf(name);
@@ -242,7 +243,7 @@ int main(int argc, char **argv) {
   };
   require(loadWorld(mapArg.empty() ? "dev_world" : mapArg.string()));
 
-  const Paper::WeaponDb weapons = require(Paper::WeaponDb::loadDirectory(PAPER_WEAPONS_DIR));
+  const Paper::WeaponDb weapons = require(Paper::WeaponDb::loadDirectory(Paper::dataDir("weapons", PAPER_WEAPONS_DIR)));
   Paper::MovementCvars movementCvars;
   Paper::DebugOverlay overlay;
   overlay.setVisible(screenshotPath != nullptr);

@@ -1,3 +1,4 @@
+#include "base/paths.h"
 #include "base/profiler.h"
 #include "core/renderer/renderer.h"
 
@@ -33,10 +34,6 @@
 #include <optional>
 #include <utility>
 #include <vector>
-
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
 
 namespace Paper {
 namespace {
@@ -198,18 +195,6 @@ struct Deleter {
     }
   }
 };
-
-std::filesystem::path executableDir() {
-#ifdef __APPLE__
-  std::uint32_t size = 0;
-  _NSGetExecutablePath(nullptr, &size);
-  std::vector<char> buffer(size);
-  if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
-    return std::filesystem::path(buffer.data()).parent_path();
-  }
-#endif
-  return {};
-}
 
 std::filesystem::path resolveAssetRoot(const std::filesystem::path &configured) {
   if (!configured.empty()) {

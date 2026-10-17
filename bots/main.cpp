@@ -14,6 +14,8 @@
 #include "net/loopback.h"
 #include "net/server.h"
 
+#include "base/paths.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -36,7 +38,7 @@ struct Options {
   NetworkConditions conditions;
   std::uint64_t seed = 1;
   bool teams = false;
-  std::string map = std::string(PAPER_MAPS_DIR) + "/dev_world.json";
+  std::string map = (Paper::dataDir("maps", PAPER_MAPS_DIR) / "dev_world.json").string();
 };
 
 void report(const std::vector<std::unique_ptr<ClientSession>> &clients, double seconds) {
@@ -230,7 +232,7 @@ int main(int argc, char **argv) {
     spdlog::error("{}", world.error().message);
     return 1;
   }
-  auto weapons = WeaponDb::loadDirectory(PAPER_WEAPONS_DIR);
+  auto weapons = WeaponDb::loadDirectory(Paper::dataDir("weapons", PAPER_WEAPONS_DIR));
   if (!weapons) {
     spdlog::error("{}", weapons.error().message);
     return 1;
