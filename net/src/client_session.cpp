@@ -20,8 +20,10 @@ constexpr float kVelocityTolerance = 0.1F;
 float lerpAngle(float a, float b, float t) {
   constexpr float twoPi = 2.0F * std::numbers::pi_v<float>;
   float d = std::fmod(b - a, twoPi);
-  if (d > std::numbers::pi_v<float>) d -= twoPi;
-  if (d < -std::numbers::pi_v<float>) d += twoPi;
+  if (d > std::numbers::pi_v<float>)
+    d -= twoPi;
+  if (d < -std::numbers::pi_v<float>)
+    d += twoPi;
   return a + d * t;
 }
 
@@ -32,15 +34,20 @@ bool matches(const PlayerState &a, const PlayerState &b) {
 }
 } // namespace
 
-ClientSession::ClientSession(Transport &transport, PeerId server, const CollisionWorld &world,
-                             const WeaponDb &weapons, MovementParams params, std::string name,
-                             ClientConfig config)
-    : m_transport(transport), m_server(server), m_world(world), m_weapons(weapons),
-      m_params(params), m_name(std::move(name)), m_config(config),
-      m_combat(makeLoadout(weapons)) {}
+ClientSession::ClientSession(Transport &transport, PeerId server,
+                             const CollisionWorld &world,
+                             const WeaponDb &weapons, MovementParams params,
+                             std::string name, ClientConfig config)
+    : m_transport(transport), m_server(server), m_world(world),
+      m_weapons(weapons), m_params(params), m_name(std::move(name)),
+      m_config(config), m_combat(makeLoadout(weapons)) {}
 
-std::vector<ShotInfo> ClientSession::takeLocalShots() { return std::exchange(m_localShots, {}); }
-std::vector<GameEvent> ClientSession::takeEvents() { return std::exchange(m_events, {}); }
+std::vector<ShotInfo> ClientSession::takeLocalShots() {
+  return std::exchange(m_localShots, {});
+}
+std::vector<GameEvent> ClientSession::takeEvents() {
+  return std::exchange(m_events, {});
+}
 
 void ClientSession::tick(const UserCmd &input) {
   PAPER_ZONE("ClientSession::tick");
@@ -49,19 +56,20 @@ void ClientSession::tick(const UserCmd &input) {
   if (m_status == Status::Playing) {
     UserCmd stamped = input;
     // The server tick our screen shows other players at (lag compensation).
-    stamped.viewTick = m_haveClock
-                           ? static_cast<float>(std::max(
-                                 0.0, (static_cast<double>(m_localTick) * dt() + m_clockOffset -
-                                       m_config.interpolationDelayMs * 0.001) /
-                                          dt()))
-                           : 0.0F;
+    stamped.viewTick =
+        m_haveClock
+            ? static_cast<float>(std::max(
+                  0.0, (static_cast<double>(m_localTick) * dt() +
+                        m_clockOffset - m_config.interpolationDelayMs * 0.001) /
+                           dt()))
+            : 0.0F;
     const UserCmd cmd = quantizeUserCmd(stamped);
     const std::uint32_t seq = m_nextSeq++;
     if (m_vitals.alive) {
-      movePlayer(m_predicted, cmd, m_world, m_params, weaponMaxSpeed(m_combat, m_weapons),
-                 static_cast<float>(dt()));
-      const WeaponEvents ev =
-          stepWeapon(m_combat, cmd, m_predicted, eyePosition(m_predicted), seq, m_weapons);
+      movePlayer(m_predicted, cmd, m_world, m_params,
+                 weaponMaxSpeed(m_combat, m_weapons), static_cast<float>(dt()));
+      const WeaponEvents ev = stepWeapon(
+          m_combat, cmd, m_predicted, eyePosition(m_predicted), seq, m_weapons);
       if (ev.fired) {
         m_localShots.push_back(ev.shot);
       }
@@ -71,10 +79,12 @@ void ClientSession::tick(const UserCmd &input) {
       m_pending.pop_front();
     }
     sendCmds();
-    m_errorOffset *= std::exp(-static_cast<float>(dt()) / m_config.correctionDecay);
+    m_errorOffset *=
+        std::exp(-static_cast<float>(dt()) / m_config.correctionDecay);
   }
   m_stats.snapshotAgeMs =
-      static_cast<double>(m_localTick - m_lastSnapshotLocalTick) * dt() * 1000.0;
+      static_cast<double>(m_localTick - m_lastSnapshotLocalTick) * dt() *
+      1000.0;
 }
 
 void ClientSession::receive() {
@@ -127,13 +137,14 @@ void ClientSession::onAccept(std::span<const std::uint8_t> packet) {
   if (const auto accept = decodeAccept(packet)) {
     m_slot = accept->slot;
     if (accept->tickRate != m_config.tickRate) {
-      spdlog::warn("server tick rate {} differs from client {}", accept->tickRate,
-                   m_config.tickRate);
+      spdlog::warn("server tick rate {} differs from client {}",
+                   accept->tickRate, m_config.tickRate);
     }
   }
 }
 
-void ClientSession::onSnapshot(std::span<const std::uint8_t> packet, std::size_t) {
+void ClientSession::onSnapshot(std::span<const std::uint8_t> packet,
+                               std::size_t) {
   if (m_status != Status::Joining && m_status != Status::Playing) {
     return;
   }
@@ -143,8 +154,9 @@ void ClientSession::onSnapshot(std::span<const std::uint8_t> packet, std::size_t
   }
   const Snapshot *baseline = nullptr;
   if (*baselineTick != 0) {
-    const auto it = std::find_if(m_snapshots.begin(), m_snapshots.end(),
-                                 [&](const Snapshot &s) { return s.tick == *baselineTick; });
+    const auto it = std::find_if(
+        m_snapshots.begin(), m_snapshots.end(),
+        [&](const Snapshot &s) { return s.tick == *baselineTick; });
     if (it == m_snapshots.end()) {
       return;
     }
@@ -159,15 +171,19 @@ void ClientSession::onSnapshot(std::span<const std::uint8_t> packet, std::size_t
   m_newestSnapshotTick = snapshot.tick;
   m_lastSnapshotLocalTick = m_localTick;
 
-  const double sample = static_cast<double>(snapshot.tick) * dt() - static_cast<double>(m_localTick) * dt();
-  m_clockOffset = m_haveClock ? m_clockOffset + (sample - m_clockOffset) * 0.1 : sample;
+  const double sample = static_cast<double>(snapshot.tick) * dt() -
+                        static_cast<double>(m_localTick) * dt();
+  m_clockOffset =
+      m_haveClock ? m_clockOffset + (sample - m_clockOffset) * 0.1 : sample;
   m_haveClock = true;
 
-  const int error = m_config.targetCmdQueue - static_cast<int>(snapshot.cmdQueue);
+  const int error =
+      m_config.targetCmdQueue - static_cast<int>(snapshot.cmdQueue);
   m_timeScale = 1.0 + std::clamp(error * 0.01, -0.03, 0.05);
 
-  const auto self = std::find_if(snapshot.players.begin(), snapshot.players.end(),
-                                 [&](const NetPlayer &p) { return p.slot == m_slot; });
+  const auto self =
+      std::find_if(snapshot.players.begin(), snapshot.players.end(),
+                   [&](const NetPlayer &p) { return p.slot == m_slot; });
   if (self != snapshot.players.end()) {
     m_vitals = self->vitals;
     if (m_status == Status::Joining) {
@@ -192,15 +208,19 @@ void ClientSession::reconcile(const Snapshot &snapshot, const NetPlayer &self) {
   if (acked == 0) {
     return;
   }
-  const auto it = std::find_if(m_pending.begin(), m_pending.end(),
-                               [&](const Pending &p) { return p.seq == acked; });
+  const auto it =
+      std::find_if(m_pending.begin(), m_pending.end(),
+                   [&](const Pending &p) { return p.seq == acked; });
   const bool found = it != m_pending.end();
   if (found) {
-    const double rtt = static_cast<double>(m_localTick - it->sentTick) * dt() * 1000.0;
-    m_stats.inputRttMs = m_stats.inputRttMs == 0.0 ? rtt : m_stats.inputRttMs * 0.9 + rtt * 0.1;
+    const double rtt =
+        static_cast<double>(m_localTick - it->sentTick) * dt() * 1000.0;
+    m_stats.inputRttMs =
+        m_stats.inputRttMs == 0.0 ? rtt : m_stats.inputRttMs * 0.9 + rtt * 0.1;
   }
   const bool agrees = found && matches(it->after, self.state) &&
-                      (!snapshot.hasSelf || combatEquivalent(it->combatAfter, snapshot.self, acked));
+                      (!snapshot.hasSelf ||
+                       combatEquivalent(it->combatAfter, snapshot.self, acked));
   while (!m_pending.empty() && m_pending.front().seq <= acked) {
     m_pending.pop_front();
   }
@@ -214,8 +234,8 @@ void ClientSession::reconcile(const Snapshot &snapshot, const NetPlayer &self) {
   CombatState combat = snapshot.hasSelf ? snapshot.self : m_combat;
   for (Pending &p : m_pending) {
     if (self.vitals.alive) {
-      movePlayer(state, p.cmd, m_world, m_params, weaponMaxSpeed(combat, m_weapons),
-                 static_cast<float>(dt()));
+      movePlayer(state, p.cmd, m_world, m_params,
+                 weaponMaxSpeed(combat, m_weapons), static_cast<float>(dt()));
       stepWeapon(combat, p.cmd, state, eyePosition(state), p.seq, m_weapons);
     }
     p.after = state;
@@ -225,13 +245,16 @@ void ClientSession::reconcile(const Snapshot &snapshot, const NetPlayer &self) {
   m_combat = combat;
   const glm::vec3 jump = before - m_predicted.origin;
   m_stats.lastCorrection = glm::length(jump);
-  m_errorOffset = glm::length(jump) > m_config.snapDistance ? glm::vec3(0.0F) : m_errorOffset + jump;
+  m_errorOffset = glm::length(jump) > m_config.snapDistance
+                      ? glm::vec3(0.0F)
+                      : m_errorOffset + jump;
 }
 
 void ClientSession::sendCmds() {
   UserCmdsMsg msg;
   msg.ackedSnapshot = m_newestSnapshotTick;
-  const std::size_t count = std::min<std::size_t>(m_pending.size(), kMaxCmdsPerPacket);
+  const std::size_t count =
+      std::min<std::size_t>(m_pending.size(), kMaxCmdsPerPacket);
   for (std::size_t i = m_pending.size() - count; i < m_pending.size(); ++i) {
     msg.cmds.push_back({m_pending[i].seq, m_pending[i].cmd});
   }
@@ -246,9 +269,12 @@ std::vector<NetPlayer> ClientSession::remotePlayers() const {
   if (m_snapshots.empty()) {
     return out;
   }
-  const double renderTime = static_cast<double>(m_localTick) * dt() + m_clockOffset -
+  const double renderTime = static_cast<double>(m_localTick) * dt() +
+                            m_clockOffset -
                             m_config.interpolationDelayMs * 0.001;
-  const auto timeOf = [&](const Snapshot &s) { return static_cast<double>(s.tick) * dt(); };
+  const auto timeOf = [&](const Snapshot &s) {
+    return static_cast<double>(s.tick) * dt();
+  };
 
   const Snapshot *newer = &m_snapshots.back();
   const Snapshot *older = newer;
@@ -262,15 +288,18 @@ std::vector<NetPlayer> ClientSession::remotePlayers() const {
   }
   double t = 0.0;
   if (older != newer && timeOf(*newer) > timeOf(*older)) {
-    t = std::clamp((renderTime - timeOf(*older)) / (timeOf(*newer) - timeOf(*older)), 0.0, 1.0);
+    t = std::clamp((renderTime - timeOf(*older)) /
+                       (timeOf(*newer) - timeOf(*older)),
+                   0.0, 1.0);
   }
   for (const NetPlayer &to : newer->players) {
     if (to.slot == m_slot) {
       continue;
     }
     NetPlayer p = to;
-    const auto from = std::find_if(older->players.begin(), older->players.end(),
-                                   [&](const NetPlayer &o) { return o.slot == to.slot; });
+    const auto from =
+        std::find_if(older->players.begin(), older->players.end(),
+                     [&](const NetPlayer &o) { return o.slot == to.slot; });
     if (from != older->players.end()) {
       const auto ft = static_cast<float>(t);
       p.state.origin = glm::mix(from->state.origin, to.state.origin, ft);
