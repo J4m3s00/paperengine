@@ -4,7 +4,9 @@
 #include "game/hitbox.h"
 #include "game/lag_compensation.h"
 #include "game/map.h"
+#include "game/rules.h"
 #include "game/movement.h"
+#include "game/phase_input.h"
 #include "game/weapon.h"
 #include "net/bot.h"
 #include "net/protocol.h"
@@ -26,6 +28,9 @@ struct SpawnPoint {
 
 // The "spawn" entities of a map.
 [[nodiscard]] std::vector<SpawnPoint> spawnPoints(const MapData &map);
+// Spawns of a team: "spawn_t" / "spawn_ct" entities, or every "spawn" if the
+// map has no team spawns.
+[[nodiscard]] std::vector<SpawnPoint> teamSpawnPoints(const MapData &map, Team team);
 
 struct ServerConfig {
   std::uint16_t tickRate = 128;
@@ -41,6 +46,13 @@ struct ServerConfig {
   // How far back shots may be rewound (ADR 0009), like sv_maxunlag.
   float maxRewindSeconds = 0.2F;
   float respawnSeconds = 3.0F;
+  // Team elimination rounds (game/rules.h). Off: free-for-all, everyone
+  // respawns after respawnSeconds.
+  bool teamplay = false;
+  RulesConfig rules;
+  bool friendlyFire = false;
+  std::vector<SpawnPoint> spawnsT;
+  std::vector<SpawnPoint> spawnsCT;
 };
 
 struct ServerStats {
@@ -56,6 +68,7 @@ struct ServerStats {
   std::uint64_t shotsFired = 0;
   std::uint64_t hits = 0;
   std::uint64_t kills = 0;
+  std::uint64_t roundsPlayed = 0;
 };
 
 // The authoritative game server (ADR 0009). It owns no sockets or clocks: the
@@ -87,6 +100,8 @@ public:
   [[nodiscard]] std::size_t queuedCmds(std::uint8_t slot) const;
   [[nodiscard]] const Vitals *vitals(std::uint8_t slot) const;
   [[nodiscard]] const CombatState *combat(std::uint8_t slot) const;
+  [[nodiscard]] const PlayerInfo *info(std::uint8_t slot) const;
+  [[nodiscard]] MatchState matchState() const { return m_rules.matchState(); }
 
 private:
   struct Client {
@@ -108,6 +123,7 @@ private:
     Vitals vitals;
     std::uint32_t respawnTick = 0;
     std::uint32_t deaths = 0;
+    PlayerInfo info;
     bool isBot = false;
     std::optional<BotBrain> brain;
     std::uint32_t botSeq = 0;
@@ -124,7 +140,11 @@ private:
   void removePeer(PeerId peer);
   void simulate(std::uint8_t slot, Client &client);
   void resolveShot(const PendingShot &shot);
-  void respawn(std::uint8_t slot, Client &client);
+  void respawn(std::uint8_t slot, Client &client, const SpawnPoint &spawn);
+  void startRound();
+  void runRules();
+  [[nodiscard]] Team smallerTeam() const;
+  [[nodiscard]] SpawnPoint spawnFor(std::uint8_t slot, const Client &client, int indexInTeam) const;
   void sendEvent(std::uint8_t slot, const GameEvent &event);
   void broadcast(const GameEvent &event, int except = -1);
   void sendSnapshots();
@@ -134,6 +154,7 @@ private:
   const CollisionWorld &m_world;
   const WeaponDb &m_weapons;
   ServerConfig m_config;
+  RoundManager m_rules;
   FixedHitboxProvider m_hitboxes;
   LagCompensation m_lag;
   std::vector<PendingShot> m_pendingShots;

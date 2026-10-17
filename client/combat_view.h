@@ -303,6 +303,10 @@ private:
         }
       }
       break;
+    case Paper::GameEvent::Type::RoundStart:
+    case Paper::GameEvent::Type::RoundEnd:
+    case Paper::GameEvent::Type::MatchEnd:
+      break; // shown by the round HUD
     case Paper::GameEvent::Type::Kill: {
       if (e.actor == session.slot()) {
         m_hitMarker = 0.4F;

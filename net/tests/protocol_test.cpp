@@ -151,7 +151,7 @@ TEST_CASE("unchanged players cost almost nothing") {
   Snapshot next = base;
   next.tick = 101;
   const auto delta = encode(next, &base);
-  CHECK(delta.size() < 40);
+  CHECK(delta.size() < 50);
 }
 
 TEST_CASE("a delta without its baseline is rejected") {

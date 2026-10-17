@@ -81,12 +81,18 @@ void writeVitals(BitWriter &w, const NetPlayer &p) {
   w.write(p.vitals.armor, 7);
   w.writeBool(p.vitals.alive);
   w.write(p.weapon, 3);
+  w.write(static_cast<std::uint32_t>(p.info.team), 2);
+  w.write(p.info.kills, 8);
+  w.write(p.info.deaths, 8);
 }
 void readVitals(BitReader &r, NetPlayer &p) {
   p.vitals.health = static_cast<std::uint8_t>(r.read(7));
   p.vitals.armor = static_cast<std::uint8_t>(r.read(7));
   p.vitals.alive = r.readBool();
   p.weapon = static_cast<std::uint8_t>(r.read(3));
+  p.info.team = static_cast<Team>(r.read(2));
+  p.info.kills = static_cast<std::uint8_t>(r.read(8));
+  p.info.deaths = static_cast<std::uint8_t>(r.read(8));
 }
 
 void writePlayerFull(BitWriter &w, const NetPlayer &p) {
@@ -152,7 +158,7 @@ void writePlayerDelta(BitWriter &w, const NetPlayer &p, const NetPlayer &b) {
   if (pitchChanged) {
     writeAngle(w, p.pitch);
   }
-  const bool vitalsChanged = !(p.vitals == b.vitals) || p.weapon != b.weapon;
+  const bool vitalsChanged = !(p.vitals == b.vitals) || p.weapon != b.weapon || !(p.info == b.info);
   w.writeBool(vitalsChanged);
   if (vitalsChanged) {
     writeVitals(w, p);
@@ -181,6 +187,25 @@ void readPlayerDelta(BitReader &r, NetPlayer &p) {
   if (r.readBool()) {
     readVitals(r, p);
   }
+}
+
+void writeMatch(BitWriter &w, const MatchState &m) {
+  w.write(static_cast<std::uint32_t>(m.phase), 3);
+  w.write(m.round, 8);
+  w.write(m.scoreT, 8);
+  w.write(m.scoreCT, 8);
+  w.write(m.phaseEndTick, 32);
+}
+MatchState readMatch(BitReader &r) {
+  MatchState m;
+  const std::uint32_t phase = r.read(3);
+  m.phase = phase <= static_cast<std::uint32_t>(Phase::MatchEnd) ? static_cast<Phase>(phase)
+                                                                 : Phase::Waiting;
+  m.round = static_cast<std::uint8_t>(r.read(8));
+  m.scoreT = static_cast<std::uint8_t>(r.read(8));
+  m.scoreCT = static_cast<std::uint8_t>(r.read(8));
+  m.phaseEndTick = r.read(32);
+  return m;
 }
 
 // Times are sent relative to the usercmd the state belongs to.
@@ -317,7 +342,7 @@ std::vector<std::uint8_t> encode(const UserCmdsMsg &msg) {
 std::vector<std::uint8_t> encode(const GameEvent &e) {
   BitWriter w;
   w.write(static_cast<std::uint32_t>(MessageType::Event), 8);
-  w.write(static_cast<std::uint32_t>(e.type), 2);
+  w.write(static_cast<std::uint32_t>(e.type), 3);
   w.write(e.actor, 5);
   w.write(e.target, 5);
   w.write(e.weapon, 3);
@@ -339,6 +364,7 @@ std::vector<std::uint8_t> encode(const Snapshot &snapshot, const Snapshot *basel
   w.write(snapshot.ackedCmd, 32);
   w.write(snapshot.cmdQueue, 5);
   w.write(static_cast<std::uint32_t>(snapshot.players.size()), 5);
+  writeMatch(w, snapshot.match);
   w.writeBool(snapshot.hasSelf);
   if (snapshot.hasSelf) {
     writeCombat(w, snapshot.self, static_cast<std::int64_t>(snapshot.ackedCmd) * kSubTicksPerTick);
@@ -417,7 +443,7 @@ std::expected<GameEvent, Error> decodeEvent(std::span<const std::uint8_t> packet
   bool typeOk = false;
   BitReader r = open(packet, MessageType::Event, typeOk);
   GameEvent e;
-  const std::uint32_t type = r.read(2);
+  const std::uint32_t type = r.read(3);
   e.actor = static_cast<std::uint8_t>(r.read(5));
   e.target = static_cast<std::uint8_t>(r.read(5));
   e.weapon = static_cast<std::uint8_t>(r.read(3));
@@ -425,7 +451,7 @@ std::expected<GameEvent, Error> decodeEvent(std::span<const std::uint8_t> packet
   e.headshot = r.readBool();
   e.from = {r.readFloat(), r.readFloat(), r.readFloat()};
   e.to = {r.readFloat(), r.readFloat(), r.readFloat()};
-  if (!typeOk || !r.ok() || type > 2) {
+  if (!typeOk || !r.ok() || type > 5) {
     return std::unexpected(bad("event"));
   }
   e.type = static_cast<GameEvent::Type>(type);
@@ -453,6 +479,7 @@ std::expected<Snapshot, Error> decodeSnapshot(std::span<const std::uint8_t> pack
   s.ackedCmd = r.read(32);
   s.cmdQueue = static_cast<std::uint8_t>(r.read(5));
   const std::uint32_t count = r.read(5);
+  s.match = readMatch(r);
   s.hasSelf = r.readBool();
   if (s.hasSelf) {
     s.self = readCombat(r, static_cast<std::int64_t>(s.ackedCmd) * kSubTicksPerTick);

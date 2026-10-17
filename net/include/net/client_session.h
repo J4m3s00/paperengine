@@ -2,6 +2,7 @@
 
 #include "game/collision.h"
 #include "game/movement.h"
+#include "game/phase_input.h"
 #include "game/weapon.h"
 #include "net/protocol.h"
 #include "net/transport.h"
@@ -73,6 +74,11 @@ public:
   [[nodiscard]] const CombatState &combat() const { return m_combat; }
   [[nodiscard]] const Vitals &vitals() const { return m_vitals; }
   [[nodiscard]] const WeaponDb &weapons() const { return m_weapons; }
+  [[nodiscard]] const MatchState &match() const { return m_match; }
+  // Everyone in the newest snapshot (not interpolated): scoreboard data.
+  [[nodiscard]] const std::vector<NetPlayer> &latestPlayers() const;
+  // Server ticks until the current phase ends, by the client's clock estimate.
+  [[nodiscard]] double phaseSecondsLeft() const;
   // Shots the local player fired since the last call (predicted, for effects).
   [[nodiscard]] std::vector<ShotInfo> takeLocalShots();
   // Server events (other players' shots, hits on/by us, kills) since the last call.
@@ -111,6 +117,7 @@ private:
   PlayerState m_predicted;
   CombatState m_combat;
   Vitals m_vitals;
+  MatchState m_match;
   std::vector<ShotInfo> m_localShots;
   std::vector<GameEvent> m_events;
   glm::vec3 m_errorOffset{0.0F};

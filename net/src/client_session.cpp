@@ -42,6 +42,19 @@ ClientSession::ClientSession(Transport &transport, PeerId server,
       m_weapons(weapons), m_params(params), m_name(std::move(name)),
       m_config(config), m_combat(makeLoadout(weapons)) {}
 
+const std::vector<NetPlayer> &ClientSession::latestPlayers() const {
+  static const std::vector<NetPlayer> none;
+  return m_snapshots.empty() ? none : m_snapshots.back().players;
+}
+
+double ClientSession::phaseSecondsLeft() const {
+  if (m_match.phaseEndTick == 0 || !m_haveClock) {
+    return 0.0;
+  }
+  const double serverNow = static_cast<double>(m_localTick) * dt() + m_clockOffset;
+  return std::max(0.0, static_cast<double>(m_match.phaseEndTick) * dt() - serverNow);
+}
+
 std::vector<ShotInfo> ClientSession::takeLocalShots() {
   return std::exchange(m_localShots, {});
 }
@@ -66,12 +79,14 @@ void ClientSession::tick(const UserCmd &input) {
     const UserCmd cmd = quantizeUserCmd(stamped);
     const std::uint32_t seq = m_nextSeq++;
     if (m_vitals.alive) {
-      movePlayer(m_predicted, cmd, m_world, m_params,
+      movePlayer(m_predicted, restrictCmd(cmd, m_match.phase), m_world, m_params,
                  weaponMaxSpeed(m_combat, m_weapons), static_cast<float>(dt()));
-      const WeaponEvents ev = stepWeapon(
-          m_combat, cmd, m_predicted, eyePosition(m_predicted), seq, m_weapons);
-      if (ev.fired) {
-        m_localShots.push_back(ev.shot);
+      if (phaseAllowsShooting(m_match.phase)) {
+        const WeaponEvents ev = stepWeapon(
+            m_combat, cmd, m_predicted, eyePosition(m_predicted), seq, m_weapons);
+        if (ev.fired) {
+          m_localShots.push_back(ev.shot);
+        }
       }
     }
     m_pending.push_back({seq, cmd, m_localTick, m_predicted, m_combat});
@@ -169,6 +184,7 @@ void ClientSession::onSnapshot(std::span<const std::uint8_t> packet,
   Snapshot &snapshot = *decoded;
   ++m_stats.snapshotsReceived;
   m_newestSnapshotTick = snapshot.tick;
+  m_match = snapshot.match;
   m_lastSnapshotLocalTick = m_localTick;
 
   const double sample = static_cast<double>(snapshot.tick) * dt() -
@@ -234,9 +250,11 @@ void ClientSession::reconcile(const Snapshot &snapshot, const NetPlayer &self) {
   CombatState combat = snapshot.hasSelf ? snapshot.self : m_combat;
   for (Pending &p : m_pending) {
     if (self.vitals.alive) {
-      movePlayer(state, p.cmd, m_world, m_params,
+      movePlayer(state, restrictCmd(p.cmd, snapshot.match.phase), m_world, m_params,
                  weaponMaxSpeed(combat, m_weapons), static_cast<float>(dt()));
-      stepWeapon(combat, p.cmd, state, eyePosition(state), p.seq, m_weapons);
+      if (phaseAllowsShooting(snapshot.match.phase)) {
+        stepWeapon(combat, p.cmd, state, eyePosition(state), p.seq, m_weapons);
+      }
     }
     p.after = state;
     p.combatAfter = combat;

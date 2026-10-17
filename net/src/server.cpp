@@ -20,9 +20,24 @@ std::vector<SpawnPoint> spawnPoints(const MapData &map) {
   return out;
 }
 
+std::vector<SpawnPoint> teamSpawnPoints(const MapData &map, Team team) {
+  std::vector<SpawnPoint> out;
+  for (const MapEntity &e : map.entitiesOfType(team == Team::T ? "spawn_t" : "spawn_ct")) {
+    out.push_back({e.origin, e.yaw});
+  }
+  return out.empty() ? spawnPoints(map) : out;
+}
+
 Server::Server(Transport &transport, const CollisionWorld &world, const WeaponDb &weapons,
                ServerConfig config)
-    : m_transport(transport), m_world(world), m_weapons(weapons), m_config(std::move(config)) {
+    : m_transport(transport), m_world(world), m_weapons(weapons), m_config(std::move(config)),
+      m_rules(m_config.rules, m_config.tickRate) {
+  if (m_config.spawnsT.empty()) {
+    m_config.spawnsT = m_config.spawns;
+  }
+  if (m_config.spawnsCT.empty()) {
+    m_config.spawnsCT = m_config.spawns;
+  }
   if (m_config.spawns.empty()) {
     m_config.spawns.push_back({glm::vec3(0.0F, 2.0F, 0.0F), 0.0F});
   }
@@ -45,6 +60,30 @@ const Vitals *Server::vitals(std::uint8_t slot) const {
   return slot < m_clients.size() && m_clients[slot] ? &m_clients[slot]->vitals : nullptr;
 }
 
+const PlayerInfo *Server::info(std::uint8_t slot) const {
+  return slot < m_clients.size() && m_clients[slot] ? &m_clients[slot]->info : nullptr;
+}
+
+Team Server::smallerTeam() const {
+  int count[3] = {0, 0, 0};
+  for (const auto &c : m_clients) {
+    if (c) {
+      ++count[static_cast<std::size_t>(c->info.team)];
+    }
+  }
+  return count[static_cast<std::size_t>(Team::T)] <= count[static_cast<std::size_t>(Team::CT)]
+             ? Team::T
+             : Team::CT;
+}
+
+SpawnPoint Server::spawnFor(std::uint8_t slot, const Client &client, int indexInTeam) const {
+  if (!m_config.teamplay) {
+    return m_config.spawns[(slot + client.deaths) % m_config.spawns.size()];
+  }
+  const auto &spawns = client.info.team == Team::T ? m_config.spawnsT : m_config.spawnsCT;
+  return spawns[static_cast<std::size_t>(indexInTeam) % spawns.size()];
+}
+
 const CombatState *Server::combat(std::uint8_t slot) const {
   return slot < m_clients.size() && m_clients[slot] ? &m_clients[slot]->combat : nullptr;
 }
@@ -62,6 +101,7 @@ int Server::addBot(const SpawnPoint &spawn, bool moving) {
   bot.state.origin = spawn.origin;
   bot.yaw = spawn.yaw;
   bot.combat = makeLoadout(m_weapons);
+  bot.info.team = m_config.teamplay ? smallerTeam() : Team::None;
   if (moving) {
     bot.brain.emplace(slot + 1);
   }
@@ -116,6 +156,7 @@ void Server::handleHello(PeerId peer, std::span<const std::uint8_t> packet) {
   client.state.origin = spawn.origin;
   client.yaw = spawn.yaw;
   client.combat = makeLoadout(m_weapons);
+  client.info.team = m_config.teamplay ? smallerTeam() : Team::None;
   *free = std::move(client);
   m_slotOfPeer[peer] = slot;
   spdlog::info("player '{}' joined (slot {})", hello->name, slot);
@@ -204,11 +245,12 @@ void Server::simulate(std::uint8_t slot, Client &client) {
   if (!client.vitals.alive) {
     return; // dead players do not move or shoot until they respawn
   }
+  const Phase phase = m_config.teamplay ? m_rules.phase() : Phase::Live;
   client.yaw = cmd.yaw;
   client.pitch = cmd.pitch;
-  movePlayer(client.state, cmd, m_world, m_config.movement, weaponMaxSpeed(client.combat, m_weapons),
-             1.0F / static_cast<float>(m_config.tickRate));
-  if (real) {
+  movePlayer(client.state, restrictCmd(cmd, phase), m_world, m_config.movement,
+             weaponMaxSpeed(client.combat, m_weapons), 1.0F / static_cast<float>(m_config.tickRate));
+  if (real && phaseAllowsShooting(phase)) {
     const WeaponEvents ev =
         stepWeapon(client.combat, cmd, client.state, eyePosition(client.state), seq, m_weapons);
     if (ev.fired) {
@@ -255,6 +297,10 @@ void Server::resolveShot(const PendingShot &pending) {
   best.distance = worldDistance;
   for (std::uint8_t slot = 0; slot < m_clients.size(); ++slot) {
     if (slot == pending.shooter || !m_clients[slot] || !m_clients[slot]->vitals.alive) {
+      continue;
+    }
+    // Without friendly fire bullets pass through teammates.
+    if (m_config.teamplay && !m_config.friendlyFire && m_clients[slot]->info.team == shooter.info.team) {
       continue;
     }
     const Client &target = *m_clients[slot];
@@ -309,17 +355,19 @@ void Server::resolveShot(const PendingShot &pending) {
     target.respawnTick =
         m_tick + static_cast<std::uint32_t>(m_config.respawnSeconds * static_cast<float>(m_config.tickRate));
     ++target.deaths;
+    target.info.deaths = static_cast<std::uint8_t>(std::min(255, target.info.deaths + 1));
+    if (!m_config.teamplay || target.info.team != shooter.info.team) {
+      shooter.info.kills = static_cast<std::uint8_t>(std::min(255, shooter.info.kills + 1));
+    }
     ++m_stats.kills;
     m_lag.clear(static_cast<std::uint8_t>(victim));
     GameEvent kill = hit;
     kill.type = GameEvent::Type::Kill;
     broadcast(kill);
   }
-  (void)shooter;
 }
 
-void Server::respawn(std::uint8_t slot, Client &client) {
-  const SpawnPoint &spawn = m_config.spawns[(slot + client.deaths) % m_config.spawns.size()];
+void Server::respawn(std::uint8_t slot, Client &client, const SpawnPoint &spawn) {
   client.state = PlayerState{};
   client.state.origin = spawn.origin;
   client.yaw = spawn.yaw;
@@ -327,6 +375,61 @@ void Server::respawn(std::uint8_t slot, Client &client) {
   client.combat = makeLoadout(m_weapons);
   client.vitals = Vitals{};
   m_lag.clear(slot);
+}
+
+// A new round: everyone is put back at their team's spawns with full health.
+void Server::startRound() {
+  int indexInTeam[3] = {0, 0, 0};
+  for (std::uint8_t slot = 0; slot < m_clients.size(); ++slot) {
+    if (!m_clients[slot]) {
+      continue;
+    }
+    Client &c = *m_clients[slot];
+    respawn(slot, c, spawnFor(slot, c, indexInTeam[static_cast<std::size_t>(c.info.team)]++));
+    c.queue.clear();
+  }
+  m_pendingShots.clear();
+}
+
+void Server::runRules() {
+  TeamCounts counts;
+  for (const auto &c : m_clients) {
+    if (c) {
+      const auto team = static_cast<std::size_t>(c->info.team);
+      ++counts.total[team];
+      counts.alive[team] += c->vitals.alive ? 1 : 0;
+    }
+  }
+  const RulesEvents ev = m_rules.tick(m_tick, counts);
+  const auto team = [](std::optional<Team> t) { return static_cast<std::uint8_t>(t.value_or(Team::None)); };
+  if (ev.newMatch) {
+    for (auto &c : m_clients) {
+      if (c) {
+        c->info.kills = 0;
+        c->info.deaths = 0;
+      }
+    }
+  }
+  if (ev.newRound) {
+    startRound();
+    GameEvent e;
+    e.type = GameEvent::Type::RoundStart;
+    e.actor = m_rules.round();
+    broadcast(e);
+  }
+  if (ev.roundWinner) {
+    ++m_stats.roundsPlayed;
+    GameEvent e;
+    e.type = GameEvent::Type::RoundEnd;
+    e.actor = team(ev.roundWinner);
+    broadcast(e);
+  }
+  if (ev.matchWinner) {
+    GameEvent e;
+    e.type = GameEvent::Type::MatchEnd;
+    e.actor = team(ev.matchWinner);
+    broadcast(e);
+  }
 }
 
 void Server::sendSnapshots() {
@@ -340,6 +443,7 @@ void Server::sendSnapshots() {
     snapshot.tick = m_tick;
     snapshot.ackedCmd = to.executedSeq;
     snapshot.cmdQueue = static_cast<std::uint8_t>(std::min<std::size_t>(to.queue.size(), 31));
+    snapshot.match = m_rules.matchState();
     snapshot.hasSelf = true;
     snapshot.self = to.combat;
     for (std::uint8_t other = 0; other < m_clients.size(); ++other) {
@@ -347,7 +451,7 @@ void Server::sendSnapshots() {
         continue;
       }
       const Client &c = *m_clients[other];
-      snapshot.players.push_back({other, c.state, c.yaw, c.pitch, c.vitals, c.combat.weapon});
+      snapshot.players.push_back({other, c.state, c.yaw, c.pitch, c.vitals, c.combat.weapon, c.info});
     }
     const Snapshot *baseline = nullptr;
     if (to.ackedSnapshot != 0) {
@@ -396,9 +500,14 @@ void Server::tick() {
   m_pendingShots.clear();
   for (std::uint8_t slot = 0; slot < m_clients.size(); ++slot) {
     Client *c = m_clients[slot] ? &*m_clients[slot] : nullptr;
-    if (c && !c->vitals.alive && m_tick >= c->respawnTick) {
-      respawn(slot, *c);
+    // Dead players come back on their own except in a live team round.
+    const bool waitsForRound = m_config.teamplay && m_rules.phase() != Phase::Waiting;
+    if (c && !c->vitals.alive && !waitsForRound && m_tick >= c->respawnTick) {
+      respawn(slot, *c, spawnFor(slot, *c, slot));
     }
+  }
+  if (m_config.teamplay) {
+    runRules();
   }
   const int interval = std::max(1, m_config.tickRate / std::max<int>(1, m_config.snapshotRate));
   if (m_tick % static_cast<std::uint32_t>(interval) == 0) {

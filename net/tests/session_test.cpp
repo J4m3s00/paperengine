@@ -398,3 +398,141 @@ TEST_CASE("lag compensation: shots at a moving target register at 100 ms RTT") {
   CHECK(static_cast<double>(compensated.hits) > 0.85 * static_cast<double>(compensated.shots));
   CHECK(static_cast<double>(uncompensated.hits) < 0.7 * static_cast<double>(uncompensated.shots));
 }
+
+namespace {
+ServerConfig teamConfig() {
+  ServerConfig c = Rig::makeConfig();
+  c.teamplay = true;
+  c.rules.freezeSeconds = 1.0F;
+  c.rules.roundSeconds = 20.0F;
+  c.rules.roundEndSeconds = 1.0F;
+  c.rules.matchEndSeconds = 2.0F;
+  c.rules.roundsToWin = 2;
+  c.spawnsT = {{glm::vec3(0, 2, 0), 0.0F}, {glm::vec3(0, 2, -150), 0.0F}};
+  c.spawnsCT = {{glm::vec3(0, 2, -300), 0.0F}};
+  return c;
+}
+const auto idle = [](auto, auto) { return UserCmd{}; };
+} // namespace
+
+TEST_CASE("teams are balanced and a round starts once both teams have players") {
+  Rig rig(1, {}, teamConfig());
+  rig.addClient();
+  rig.addClient();
+  rig.run(20, idle);
+  CHECK(rig.server.info(0)->team == Team::T);
+  CHECK(rig.server.info(1)->team == Team::CT);
+  CHECK(rig.server.matchState().phase == Phase::Freeze);
+  CHECK(rig.clients[0]->match().phase == Phase::Freeze);
+}
+
+TEST_CASE("a single team waits and respawns freely") {
+  Rig rig(1, {}, teamConfig());
+  rig.addClient();
+  rig.run(200, idle);
+  CHECK(rig.server.matchState().phase == Phase::Waiting);
+}
+
+TEST_CASE("nobody can move or shoot during freeze, then everyone can") {
+  Rig rig(1, {}, teamConfig());
+  auto &a = rig.addClient();
+  rig.addClient();
+  rig.run(40, [](auto, auto) { return runForward(); });
+  REQUIRE(rig.server.matchState().phase == Phase::Freeze);
+  CHECK(rig.server.playerState(0)->origin.z == doctest::Approx(0.0F).epsilon(0.01));
+  CHECK(a.predicted().origin.z == doctest::Approx(0.0F).epsilon(0.01));
+  rig.run(128 * 2, [](auto, auto) { return runForward(); });
+  CHECK(rig.server.matchState().phase == Phase::Live);
+  CHECK(rig.server.playerState(0)->origin.z < -50.0F);
+  CHECK(a.stats().corrections < 8); // phase changes cost a couple of small corrections
+}
+
+TEST_CASE("killing the other team wins rounds and the match, stats are kept") {
+  Rig rig(1, {}, teamConfig());
+  auto &client = rig.addClient();
+  rig.run(10, idle);
+  const int bot = rig.server.addBot({glm::vec3(0, 2, -300), 0.0F});
+  REQUIRE(bot >= 0);
+  rig.run(20, idle);
+  REQUIRE(rig.server.info(static_cast<std::uint8_t>(bot))->team == Team::CT);
+  bool sawRoundStart = false;
+  bool sawMatchEnd = false;
+  int roundsWon = 0;
+  for (int round = 1; round <= 2; ++round) {
+    // Wait for the round to go live, then shoot the bot in the head.
+    for (int t = 0; t < 128 * 4 && rig.server.matchState().phase != Phase::Live; ++t) {
+      rig.run(1, idle);
+    }
+    REQUIRE(rig.server.matchState().phase == Phase::Live);
+    rig.run(10, idle);
+    rig.run(8, [](auto, auto) { return aimAndFire(0.0F); });
+    rig.run(20, idle);
+    roundsWon += rig.server.matchState().scoreT == round ? 1 : 0;
+    for (const GameEvent &e : client.takeEvents()) {
+      sawRoundStart = sawRoundStart || e.type == GameEvent::Type::RoundStart;
+      sawMatchEnd = sawMatchEnd || (e.type == GameEvent::Type::MatchEnd && e.actor == 1);
+    }
+  }
+  CHECK(roundsWon == 2);
+  rig.run(128, idle);
+  for (const GameEvent &e : client.takeEvents()) {
+    sawMatchEnd = sawMatchEnd || (e.type == GameEvent::Type::MatchEnd && e.actor == 1);
+  }
+  CHECK(sawRoundStart);
+  CHECK(sawMatchEnd);
+  CHECK(rig.server.info(0)->kills == 2);
+  CHECK(rig.server.info(static_cast<std::uint8_t>(bot))->deaths == 2);
+  // The scoreboard data reaches the client.
+  bool sawScore = false;
+  for (const NetPlayer &p : client.latestPlayers()) {
+    sawScore = sawScore || (p.slot == 0 && p.info.kills == 2);
+  }
+  CHECK(sawScore);
+  // After the match ends it starts over.
+  rig.run(128 * 6, idle);
+  CHECK(rig.server.matchState().scoreT == 0);
+  CHECK(rig.server.info(0)->kills == 0);
+}
+
+TEST_CASE("dead players stay dead during a live round and return with the next round") {
+  Rig rig(1, {}, teamConfig());
+  rig.addClient();
+  rig.run(10, idle);
+  const int bot = rig.server.addBot({glm::vec3(0, 2, -300), 0.0F});
+  rig.run(20, idle);
+  for (int t = 0; t < 128 * 4 && rig.server.matchState().phase != Phase::Live; ++t) rig.run(1, idle);
+  rig.run(8, [](auto, auto) { return aimAndFire(0.0F); });
+  rig.run(40, idle);
+  CHECK(rig.server.matchState().phase == Phase::RoundEnd);
+  CHECK_FALSE(rig.server.vitals(static_cast<std::uint8_t>(bot))->alive);
+  // Even past the 3 s free-respawn timer a dead player does not return mid-round.
+  rig.run(128, idle);
+  CHECK(rig.server.matchState().phase == Phase::Freeze);
+  CHECK(rig.server.vitals(static_cast<std::uint8_t>(bot))->alive);
+}
+
+TEST_CASE("without friendly fire bullets pass through teammates; with it they hit") {
+  const auto shootThroughTeammate = [](bool friendlyFire) {
+    ServerConfig config = teamConfig();
+    config.friendlyFire = friendlyFire;
+    Rig rig(1, {}, std::move(config));
+    rig.addClient();                                       // T at (0, 0, 0)
+    rig.run(10, idle);
+    const int enemy = rig.server.addBot({glm::vec3(0, 2, -300), 0.0F}); // CT
+    const int mate = rig.server.addBot({glm::vec3(0, 2, -150), 0.0F});  // T, in the line of fire
+    rig.run(20, idle);
+    REQUIRE(rig.server.info(static_cast<std::uint8_t>(enemy))->team == Team::CT);
+    REQUIRE(rig.server.info(static_cast<std::uint8_t>(mate))->team == Team::T);
+    for (int t = 0; t < 128 * 4 && rig.server.matchState().phase != Phase::Live; ++t) rig.run(1, idle);
+    rig.run(8, [](auto, auto) { return aimAndFire(0.0F); });
+    rig.run(10, idle);
+    return std::pair{rig.server.vitals(static_cast<std::uint8_t>(enemy))->alive,
+                     rig.server.vitals(static_cast<std::uint8_t>(mate))->health};
+  };
+  const auto off = shootThroughTeammate(false);
+  CHECK_FALSE(off.first);  // the enemy behind died
+  CHECK(off.second == 100); // the teammate was not touched
+  const auto on = shootThroughTeammate(true);
+  CHECK(on.first); // the teammate absorbed the bullets
+  CHECK(on.second < 100);
+}

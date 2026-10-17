@@ -2,6 +2,7 @@
 
 #include "base/error.h"
 #include "game/movement.h"
+#include "game/rules.h"
 #include "game/weapon.h"
 #include "net/bitstream.h"
 
@@ -68,14 +69,15 @@ struct NetPlayer {
   float pitch = 0.0F;
   Vitals vitals;
   std::uint8_t weapon = 0;
+  PlayerInfo info;
 };
 
 // Something that happened, sent reliably to the clients that care (effects,
 // hit markers, kill feed).
 struct GameEvent {
-  enum class Type : std::uint8_t { Shot, Hit, Kill };
+  enum class Type : std::uint8_t { Shot, Hit, Kill, RoundStart, RoundEnd, MatchEnd };
   Type type = Type::Shot;
-  // Shooter / attacker / killer.
+  // Shooter / attacker / killer. For RoundEnd and MatchEnd the winning Team.
   std::uint8_t actor = 0;
   // Victim (Hit, Kill); unused for Shot.
   std::uint8_t target = 0;
@@ -100,6 +102,7 @@ struct Snapshot {
   // reconciliation.
   bool hasSelf = false;
   CombatState self;
+  MatchState match;
 };
 
 // True if two weapon states behave the same from usercmd time `nowSeq` on,

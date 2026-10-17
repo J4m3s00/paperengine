@@ -51,6 +51,31 @@ struct RulesEvents {
   bool newMatch = false;
 };
 
+// What players may do in a phase (the server enforces it, the client predicts
+// the same).
+[[nodiscard]] inline bool phaseAllowsMovement(Phase p) { return p != Phase::Freeze; }
+[[nodiscard]] inline bool phaseAllowsShooting(Phase p) {
+  return p == Phase::Waiting || p == Phase::Live;
+}
+
+// What everyone sees of the match; replicated in every snapshot.
+struct MatchState {
+  Phase phase = Phase::Waiting;
+  std::uint8_t round = 1;
+  std::uint8_t scoreT = 0;
+  std::uint8_t scoreCT = 0;
+  // Server tick at which the phase ends (0 = no end).
+  std::uint32_t phaseEndTick = 0;
+  bool operator==(const MatchState &) const = default;
+};
+
+struct PlayerInfo {
+  Team team = Team::None;
+  std::uint8_t kills = 0;
+  std::uint8_t deaths = 0;
+  bool operator==(const PlayerInfo &) const = default;
+};
+
 class RoundManager {
 public:
   RoundManager(const RulesConfig &config, std::uint32_t tickRate)
@@ -64,6 +89,10 @@ public:
   [[nodiscard]] int round() const { return m_round; }
   [[nodiscard]] int score(Team team) const { return m_score[static_cast<std::size_t>(team)]; }
   [[nodiscard]] const RulesConfig &config() const { return m_config; }
+  [[nodiscard]] MatchState matchState() const {
+    return {m_phase, static_cast<std::uint8_t>(m_round), static_cast<std::uint8_t>(score(Team::T)),
+            static_cast<std::uint8_t>(score(Team::CT)), m_phaseEnd};
+  }
 
 private:
   [[nodiscard]] std::uint32_t ticks(float seconds) const {
