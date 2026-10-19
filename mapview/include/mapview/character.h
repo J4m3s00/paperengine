@@ -1,10 +1,9 @@
 #pragma once
 
 #include "mapview/asset_paths.h"
-#include "weapon_models.h"
+#include "mapview/weapon_models.h"
 
 #include "anim/animator.h"
-#include "base/cvar.h"
 #include "core/renderer/renderer.h"
 #include "core/scene/scene.h"
 #include "net/protocol.h"
@@ -133,9 +132,9 @@ public:
   static constexpr float kScale = 39.3701F;
 
   Character(Paper::Scene &scene, const CharacterAssets &assets, WeaponModels &weapons,
-            const Paper::WeaponDb &db, Paper::CvarRegistry &cvars = Paper::cvars())
+            const Paper::WeaponDb &db)
       : m_scene(scene), m_assets(assets), m_weapons(weapons), m_db(db),
-        m_animator(assets.library()), m_cvars(&cvars) {
+        m_animator(assets.library()) {
     m_instance = scene.instantiateSkinned(assets.model());
     for (const entt::entity e : m_instance.meshes) {
       auto &mr = scene.registry().get<Paper::MeshRenderer>(e);
@@ -156,6 +155,9 @@ public:
   }
 
   void shot() { m_shotPending = true; }
+
+  // The entity of weapon `index` held in the hand (null until first shown).
+  [[nodiscard]] entt::entity gun(std::size_t index) const { return m_guns[index]; }
 
   void update(float dt, const Paper::NetPlayer &p) {
     auto &root = m_scene.registry().get<Paper::Transform>(m_instance.root);
@@ -253,23 +255,16 @@ private:
     // Hand matrix in model space, then the same placement as the body.
     const glm::mat4 character = root.matrix();
     const glm::mat4 hand = m_world[static_cast<std::size_t>(m_assets.m_hand)];
-    // Tuned by eye (cvars cl_gunhand_*): the gun's grip sits in the palm with
-    // the barrel pointing where the character looks.
+    // The grip is per weapon data (weapons/*.json, edited in weapon_editor).
     setTransformFromMatrix(m_scene.registry().get<Paper::Transform>(m_guns[weapon]),
-                           character * hand * gripOffset());
+                           character * hand * gripOffset(m_db.at(weapon)));
   }
 
-  [[nodiscard]] glm::mat4 gripOffset() const {
-    const auto get = [&](const char *name, float fallback) {
-      auto *cvar = dynamic_cast<Paper::Cvar<float> *>(m_cvars->find(name));
-      return cvar != nullptr ? cvar->value() : fallback;
-    };
-    glm::mat4 m = glm::translate(glm::mat4(1.0F), glm::vec3(get("cl_gunhand_x", 0.0F),
-                                                           get("cl_gunhand_y", 0.0F),
-                                                           get("cl_gunhand_z", 0.0F)));
-    m = glm::rotate(m, glm::radians(get("cl_gunhand_rx", 0.0F)), glm::vec3(1, 0, 0));
-    m = glm::rotate(m, glm::radians(get("cl_gunhand_ry", 0.0F)), glm::vec3(0, 1, 0));
-    m = glm::rotate(m, glm::radians(get("cl_gunhand_rz", 0.0F)), glm::vec3(0, 0, 1));
+  [[nodiscard]] static glm::mat4 gripOffset(const Paper::WeaponDef &def) {
+    glm::mat4 m = glm::translate(glm::mat4(1.0F), def.gripPosition);
+    m = glm::rotate(m, glm::radians(def.gripRotation.x), glm::vec3(1, 0, 0));
+    m = glm::rotate(m, glm::radians(def.gripRotation.y), glm::vec3(0, 1, 0));
+    m = glm::rotate(m, glm::radians(def.gripRotation.z), glm::vec3(0, 0, 1));
     return m;
   }
 
@@ -277,7 +272,6 @@ private:
   const CharacterAssets &m_assets;
   WeaponModels &m_weapons;
   const Paper::WeaponDb &m_db;
-  Paper::CvarRegistry *m_cvars;
   Paper::Scene::SkinnedInstance m_instance;
   std::vector<bool> m_isBody;
   Paper::Animator m_animator;

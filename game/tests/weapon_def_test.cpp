@@ -2,6 +2,10 @@
 
 #include "game/weapon_def.h"
 
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
 using namespace Paper;
 
 namespace {
@@ -93,4 +97,31 @@ TEST_CASE("weapons can name a 3D model and muzzle for the client") {
   REQUIRE(parsed.has_value());
   CHECK(parsed->at(0).model == "m");
   CHECK(parsed->at(0).muzzle == glm::vec3(1, 2, 3));
+}
+
+TEST_CASE("weapon grips default to identity and are read and saved as data") {
+  const auto parsed = WeaponDb::parse({kMinimal, R"({"id":"y","order":2,"slot":"primary","damage":10,
+    "cycleTime":0.1,"magazine":5,"reloadTime":1.0,"recoil":{"pattern":[[0,0]]},
+    "gripPosition":[0.1,0.2,0.3],"gripRotation":[0,90,-45]})"});
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->at(0).gripPosition == glm::vec3(0.0F));
+  CHECK(parsed->at(0).gripRotation == glm::vec3(0.0F));
+  CHECK(parsed->at(1).gripPosition == glm::vec3(0.1F, 0.2F, 0.3F));
+  CHECK(parsed->at(1).gripRotation == glm::vec3(0.0F, 90.0F, -45.0F));
+
+  const auto file = std::filesystem::temp_directory_path() / "paper_grip_test.json";
+  {
+    std::ofstream(file) << kMinimal;
+  }
+  REQUIRE(saveWeaponGrip(file, {1, 2, 3}, {10, 20, 30}).has_value());
+  std::ifstream in(file);
+  std::stringstream text;
+  text << in.rdbuf();
+  const auto reloaded = WeaponDb::parse({text.str()});
+  REQUIRE(reloaded.has_value());
+  CHECK(reloaded->at(0).id == "x");
+  CHECK(reloaded->at(0).magazine == 5);
+  CHECK(reloaded->at(0).gripPosition == glm::vec3(1, 2, 3));
+  CHECK(reloaded->at(0).gripRotation == glm::vec3(10, 20, 30));
+  std::filesystem::remove(file);
 }

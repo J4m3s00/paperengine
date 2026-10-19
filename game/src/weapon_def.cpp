@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 
@@ -49,6 +50,13 @@ std::expected<WeaponDef, Error> parseWeapon(const std::string &text) {
     if (const auto it = j.find("muzzle"); it != j.end() && it->is_array() && it->size() == 3) {
       w.muzzle = {(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()};
     }
+    const auto vec3 = [&](const char *key, glm::vec3 &out) {
+      if (const auto it = j.find(key); it != j.end() && it->is_array() && it->size() == 3) {
+        out = {(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()};
+      }
+    };
+    vec3("gripPosition", w.gripPosition);
+    vec3("gripRotation", w.gripRotation);
     if (const auto it = j.find("inaccuracy"); it != j.end()) {
       InaccuracyDef &i = w.inaccuracy;
       i.stand = get(*it, "stand", 0.0F);
@@ -151,5 +159,30 @@ int WeaponDb::indexOf(std::string_view id) const {
     }
   }
   return -1;
+}
+
+std::expected<void, Error> saveWeaponGrip(const std::filesystem::path &file,
+                                          const glm::vec3 &position,
+                                          const glm::vec3 &rotationDegrees) {
+  std::ifstream in(file);
+  if (!in) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument, "cannot read " + file.string()});
+  }
+  auto j = nlohmann::ordered_json::parse(in, nullptr, false);
+  in.close();
+  if (j.is_discarded() || !j.is_object()) {
+    return std::unexpected(invalid(file.string() + " is not a JSON object"));
+  }
+  // Rounded so float noise (0.034000001...) does not end up in the file.
+  const auto round4 = [](float v) { return std::round(static_cast<double>(v) * 10000.0) / 10000.0; };
+  j["gripPosition"] = {round4(position.x), round4(position.y), round4(position.z)};
+  j["gripRotation"] = {round4(rotationDegrees.x), round4(rotationDegrees.y),
+                       round4(rotationDegrees.z)};
+  std::ofstream out(file, std::ios::trunc);
+  if (!out) {
+    return std::unexpected(Error{ErrorCode::InvalidArgument, "cannot write " + file.string()});
+  }
+  out << j.dump(1) << '\n';
+  return {};
 }
 } // namespace Paper

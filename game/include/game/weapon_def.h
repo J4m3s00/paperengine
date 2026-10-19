@@ -73,7 +73,17 @@ struct WeaponDef {
   // space (meters, +X along the barrel).
   std::string model;
   glm::vec3 muzzle{0.0F};
+  // How a character holds it: the model's pose relative to the hand bone
+  // (meters in the hand's space, Euler degrees applied X, then Y, then Z).
+  glm::vec3 gripPosition{0.0F};
+  glm::vec3 gripRotation{0.0F};
 };
+
+// Writes `gripPosition` / `gripRotation` into the weapon JSON file, keeping
+// its other fields and their order.
+[[nodiscard]] std::expected<void, Error> saveWeaponGrip(const std::filesystem::path &file,
+                                                        const glm::vec3 &position,
+                                                        const glm::vec3 &rotationDegrees);
 
 // All weapons, sorted by `order`. The index of a weapon is its position here
 // and is what the network protocol carries.
@@ -84,6 +94,8 @@ public:
 
   [[nodiscard]] std::size_t size() const { return m_weapons.size(); }
   [[nodiscard]] const WeaponDef &at(std::size_t index) const { return m_weapons[index]; }
+  // For tools that edit presentation fields in memory.
+  [[nodiscard]] WeaponDef &edit(std::size_t index) { return m_weapons[index]; }
   // Index of the weapon with this id, or -1.
   [[nodiscard]] int indexOf(std::string_view id) const;
   [[nodiscard]] const std::vector<WeaponDef> &all() const { return m_weapons; }
