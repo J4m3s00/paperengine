@@ -1,7 +1,7 @@
 #pragma once
 
-#include "character.h"
-#include "weapon_models.h"
+#include "mapview/character.h"
+#include "mapview/weapon_models.h"
 
 #include "audio/audio.h"
 #include "audio/synth.h"

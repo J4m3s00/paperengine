@@ -26,11 +26,28 @@
  },
  "recoil": {
   "pattern": [
-   [2.0, 0.0]
+   [
+    2.0,
+    0.0
+   ]
   ],
   "resetTime": 1.0,
   "recovery": 20.0
  },
  "model": "awp",
- "muzzle": [0.784, 0.04, 0]
+ "muzzle": [
+  0.784,
+  0.04,
+  0
+ ],
+ "gripPosition": [
+  -0.022,
+  0.222,
+  0.008
+ ],
+ "gripRotation": [
+  0.0,
+  90.0,
+  90.0
+ ]
 }

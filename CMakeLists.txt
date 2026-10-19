@@ -116,6 +116,7 @@ add_subdirectory(core)
 add_subdirectory(sandbox)
 add_subdirectory(client)
 add_subdirectory(editor)
+add_subdirectory(weapon_editor)
 add_subdirectory(server)
 add_subdirectory(bots)
 

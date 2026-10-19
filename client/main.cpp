@@ -1,6 +1,6 @@
 #include "local_player.h"
 #include "audio/audio.h"
-#include "character.h"
+#include "mapview/character.h"
 #include "combat_view.h"
 #include "movement_hud.h"
 #include "net_hud.h"
@@ -280,12 +280,6 @@ int main(int argc, char **argv) {
   }
   auto &showHitboxes = Paper::cvars().addBool(
       "cl_showhitboxes", characters.empty(), "Draw other players as their hitboxes instead of models");
-  const std::pair<const char *, float> gunTuning[] = {
-      {"cl_gunhand_x", 0.0F},  {"cl_gunhand_y", 0.0F},  {"cl_gunhand_z", 0.0F},
-      {"cl_gunhand_rx", 0.0F}, {"cl_gunhand_ry", 0.0F}, {"cl_gunhand_rz", 0.0F}};
-  for (const auto &[name, value] : gunTuning) {
-    Paper::cvars().add<float>(name, value, -360.0F, 360.0F, "Where the weapon sits in the hand (tuning)");
-  }
   // Other players are drawn as their hitboxes, one colored box per hit group,
   // so what you see is exactly what you can hit.
   const glm::vec3 groupColors[] = {{0.9F, 0.15F, 0.15F},  {0.95F, 0.5F, 0.1F},  {0.95F, 0.85F, 0.2F},
